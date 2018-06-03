@@ -2,7 +2,7 @@ package main
 
 /*
 #cgo CFLAGS: -I./libwebp-1.0.0/src
-#cgo LDFLAGS: -L./libwebp-1.0.0/src -l webp
+#cgo LDFLAGS: -L./libwebp-1.0.0/src -l webp -l m
 #include <stdlib.h>
 #include <string.h>
 #include <webp/encode.h>
