@@ -53,7 +53,7 @@ func errImage(w http.ResponseWriter, message string) {
 	png.Encode(w, canvas)
 }
 
-func merge(path string) {
+func merge(path string, deleteoriginal bool) {
 	ar, err := os.Create(filepath.Join(path, "merge"))
 	if err != nil {
 		log.Fatal(err)
@@ -66,6 +66,7 @@ func merge(path string) {
 
 	var cursor int64
 	cursors, pathes := make([]int64, 0), make([]string, 0)
+	full := make([]string, 0)
 	basepath := path
 	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
 		if !strings.HasSuffix(path, ".webp") && !strings.HasSuffix(path, ".json") {
@@ -90,6 +91,7 @@ func merge(path string) {
 		} else {
 			pathes = append(pathes, path+strings.Repeat(" ", 248-len(path)))
 		}
+		full = append(full, path)
 		return nil
 	})
 	ar.Write(eoa)
@@ -102,6 +104,12 @@ func merge(path string) {
 		copy(p[8:], pathes[i])
 		ar.WriteAt(p[:], int64(i*256+8))
 	}
+
+	if deleteoriginal {
+		for _, p := range full {
+			os.Remove(p)
+		}
+	}
 }
 
 func main() {
@@ -113,13 +121,14 @@ func main() {
 			if !d.IsDir() {
 				continue
 			}
-			log.Println(filepath.Join(*dir, d.Name()))
+			p := filepath.Join(*dir, d.Name())
+			merge(p, true)
 		}
 		return
 	}
 
 	if *merger != "" {
-		merge(*merger)
+		merge(*merger, false)
 		return
 	}
 
@@ -135,7 +144,7 @@ func main() {
 			return
 		}
 
-		uri = strings.Replace(uri[1:], "thumb/", "", -1)
+		uri = strings.Replace(uri[1:], "thumbs/", "", -1)
 		parts := strings.Split(uri, "/")
 		if len(parts) != 3 {
 			w.WriteHeader(400)
