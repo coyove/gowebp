@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	sync "github.com/sasha-s/go-deadlock"
+	"sync"
 )
 
 const maxfile = 2
