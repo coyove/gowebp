@@ -4,9 +4,11 @@ import (
 	"encoding/binary"
 	"flag"
 	"image"
+	"image/draw"
 	_ "image/jpeg"
 	"image/png"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 
 var merger = flag.String("m", "", "")
 var splitter = flag.String("s", "", "")
+var dir = flag.String("x", "", "")
 var listen = flag.String("l", ":8888", "")
 var guid = []byte("\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4")
 var eoa = []byte("\xdd\x32\xea\x0d\x87\xd4\x4e\x05\xab\x32\x0a\xee\x75\x47\xd9\x58")
@@ -36,8 +39,9 @@ func errImage(w http.ResponseWriter, message string) {
 		width = len(message) * dejavu.Width
 	}
 	canvas := image.NewRGBA(image.Rect(0, 0, width, (dejavu.FullHeight+2)*rows))
+	draw.Draw(canvas, canvas.Bounds(), image.White, image.ZP, draw.Src)
 	for i := 0; i < len(message); i++ {
-		dejavu.DrawText(canvas, string(message[i]), x, y+dejavu.Height, image.White)
+		dejavu.DrawText(canvas, string(message[i]), x, y+dejavu.Height, image.Black)
 		if i%columns == columns-1 {
 			y += dejavu.FullHeight + 2
 			x = 0
@@ -64,7 +68,7 @@ func merge(path string) {
 	cursors, pathes := make([]int64, 0), make([]string, 0)
 	basepath := path
 	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if !strings.HasSuffix(path, ".webp") {
+		if !strings.HasSuffix(path, ".webp") && !strings.HasSuffix(path, ".json") {
 			return nil
 		}
 		file, err := os.Open(path)
@@ -103,6 +107,17 @@ func merge(path string) {
 func main() {
 	flag.Parse()
 
+	if *dir != "" {
+		dirs, _ := ioutil.ReadDir(*dir)
+		for _, d := range dirs {
+			if !d.IsDir() {
+				continue
+			}
+			log.Println(filepath.Join(*dir, d.Name()))
+		}
+		return
+	}
+
 	if *merger != "" {
 		merge(*merger)
 		return
@@ -127,8 +142,13 @@ func main() {
 			return
 		}
 
-		mergepath := "./gallery/" + parts[0] + "/" + parts[1] + "/merge"
 		w.Header().Add("Access-Control-Allow-Origin", "*")
+
+		mergepath := "./gallery/" + parts[0] + "/" + parts[1] + "/merge"
+		if !strings.HasSuffix(mergepath, ".webp") {
+			http.ServeFile(w, r, "./gallery/"+parts[0]+"/"+parts[1]+"/"+parts[2])
+			return
+		}
 		if _, err := os.Stat(mergepath); err == nil {
 			split(w, mergepath, parts[2])
 		} else {
