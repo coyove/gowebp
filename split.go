@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -9,8 +8,11 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"sync"
 )
@@ -22,7 +24,7 @@ type archive struct {
 	fd     *os.File
 	ref    *fileref
 	count  int
-	cursor map[string][2]int64
+	cursor *uint64map
 	size   int64
 	path   string
 }
@@ -30,17 +32,6 @@ type archive struct {
 type fileref struct {
 	sync.Mutex
 	m map[string]*archive
-}
-
-func (d *fileref) status() string {
-	d.Lock()
-	defer d.Unlock()
-
-	buf := &bytes.Buffer{}
-	for k, v := range d.m {
-		buf.WriteString(fmt.Sprintf("%s(%v): %d\n", k, v.fd, v.count))
-	}
-	return buf.String()
 }
 
 func (d *fileref) open(path string) (*archive, error) {
@@ -67,43 +58,19 @@ func (d *fileref) open(path string) (*archive, error) {
 		x = &archive{
 			fd:     ar,
 			count:  1,
-			cursor: make(map[string][2]int64),
+			cursor: &uint64map{},
 			size:   st.Size(),
 			ref:    d,
 			path:   xpath,
 		}
-		readInt64 := func() int64 {
-			p := [8]byte{}
-			if _, err := ar.Read(p[:]); err != nil {
-				return -1
-			}
-			return int64(binary.BigEndian.Uint64(p[:]))
+		p := [8]byte{}
+		if _, err := ar.Read(p[:]); err != nil {
+			return nil, err
 		}
+		count := binary.BigEndian.Uint64(p[:])
+		x.cursor.data = make([][3]uint64, count)
 
-		count := readInt64()
-		lastc, lastp := int64(-1), ""
-		if count == -1 {
-			return nil, fmt.Errorf("invalid counter: %d", count)
-		}
-		p := [248]byte{}
-		for i := int64(0); i < count; i++ {
-			c := readInt64()
-			if c == -1 {
-				return nil, fmt.Errorf("invalid cursor: %d", c)
-			}
-			if _, err := ar.Read(p[:]); err != nil {
-				return nil, err
-			}
-
-			path := strings.TrimSpace(string(p[:]))
-			if lastc != -1 {
-				x.cursor[lastp] = [2]int64{lastc, c - lastc - 16}
-			}
-			lastc, lastp = c, path
-		}
-		if count > 0 {
-			x.cursor[lastp] = [2]int64{lastc, x.size - lastc - 16 - 16}
-		}
+		x.cursor.seal()
 		d.m[xpath] = x
 	} else {
 		x.Lock()
@@ -140,20 +107,20 @@ func split(w http.ResponseWriter, path, name string) {
 	}
 	defer cofileref.close(ar)
 
-	if x, ok := ar.cursor[name]; ok {
+	if x, l, ok := ar.cursor.get(name); ok {
 		ar.Lock()
-		if _, err := ar.fd.Seek(x[0]+headerSize, 0); err != nil {
+		if _, err := ar.fd.Seek(int64(x), 0); err != nil {
 			ar.Unlock()
 			errImage(w, err.Error())
 			return
 		}
 
 		w.Header().Add("Content-Type", "image/webp")
-		wr, err := io.CopyN(w, ar.fd, x[1])
+		wr, err := io.CopyN(w, ar.fd, int64(l))
 		ar.Unlock()
 
-		if err != nil || wr != x[1] {
-			errImage(w, fmt.Sprintf("%v, written: %d/%d", err, wr, x[1]))
+		if err != nil || wr != int64(l) {
+			errImage(w, fmt.Sprintf("%v, written: %d/%d", err, wr, int64(l)))
 			return
 		}
 	} else {
@@ -206,5 +173,62 @@ func splitInfo(path string) {
 			log.Fatal(err)
 		}
 		log.Println("name:", pathes[idx], "size:", ln)
+	}
+}
+
+type uint64map struct {
+	data [][3]uint64
+}
+
+func fnv64Sum(data string) uint64 {
+	const prime64 = 1099511628211
+	var hash uint64
+	for _, c := range data {
+		hash *= prime64
+		hash ^= uint64(c)
+	}
+	return hash
+}
+
+func (m *uint64map) push(k string, v, l uint64) {
+	if m.data == nil {
+		m.data = make([][3]uint64, 0)
+	}
+	m.data = append(m.data, [3]uint64{fnv64Sum(k), v, l})
+}
+
+func (m *uint64map) bytes() []byte {
+	if m.data == nil {
+		return nil
+	}
+	x := (*reflect.SliceHeader)(unsafe.Pointer(&m.data))
+	var r reflect.SliceHeader
+	r.Len = x.Len * 24
+	r.Cap = x.Cap * 24
+	r.Data = x.Data
+	return *(*[]byte)(unsafe.Pointer(&r))
+}
+
+func (m *uint64map) seal() {
+	sort.Slice(m.data, func(i, j int) bool {
+		return m.data[i][0] < m.data[j][0]
+	})
+}
+
+func (m *uint64map) get(key string) (uint64, uint64, bool) {
+	var start, end, k uint64 = 0, uint64(len(m.data)), fnv64Sum(key)
+AGAIN:
+	if start >= end {
+		return 0, 0, false
+	}
+	mid := (start + end) / 2
+	if x := m.data[mid]; k == x[0] {
+		return x[1], x[2], true
+	} else if k < x[0] {
+		end = mid
+		goto AGAIN
+	} else {
+		start = mid + 1
+		goto AGAIN
 	}
 }

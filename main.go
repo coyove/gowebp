@@ -24,9 +24,9 @@ var dir = flag.String("x", "", "")
 var listen = flag.String("l", ":8888", "")
 var guid = []byte("\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4")
 var eoa = []byte("\xdd\x32\xea\x0d\x87\xd4\x4e\x05\xab\x32\x0a\xee\x75\x47\xd9\x58")
-var dummy1k = strings.Repeat("\x00", 1024)
 
-const headerSize = 1024 * 1024
+const dummy8 = "\x00\x00\x00\x00\x00\x00\x00\x00"
+const headerSize = 1024 * 1024 * 8
 
 func errImage(w http.ResponseWriter, message string) {
 	const columns = 32
@@ -54,57 +54,75 @@ func errImage(w http.ResponseWriter, message string) {
 }
 
 func merge(path string, deleteoriginal bool) {
+	os.Remove(filepath.Join(path, "merge"))
+
+	full := make([]string, 0)
+	basepath := path
+	pathbuflen := 0
+
+	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		// if !strings.HasSuffix(path, ".webp") && !strings.HasSuffix(path, ".json") {
+		// 	return nil
+		// }
+		full = append(full, path)
+		pathbuflen += len(path) + 2
+		return nil
+	})
+
 	ar, err := os.Create(filepath.Join(path, "merge"))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer ar.Close()
 
-	for i := 0; i < 1024; i++ {
-		ar.WriteString(dummy1k)
+	p, count := [24]byte{}, len(full)
+	binary.BigEndian.PutUint64(p[:8], uint64(count))
+	ar.Write(p[:8])
+
+	headerlen := (len(p)*count + pathbuflen + 7) / 8 * 8
+
+	for i := 0; i < headerlen/8; i++ {
+		ar.WriteString(dummy8)
 	}
 
-	var cursor int64
-	cursors, pathes := make([]int64, 0), make([]string, 0)
-	full := make([]string, 0)
-	basepath := path
-	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
-		if !strings.HasSuffix(path, ".webp") && !strings.HasSuffix(path, ".json") {
-			return nil
-		}
+	headerlen += 8
+
+	cursor, pcursor := int64(headerlen), int64(count*len(p)+8)
+	m := uint64map{}
+	for _, path := range full {
 		file, err := os.Open(path)
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer file.Close()
 
-		cursors = append(cursors, cursor)
+		path, _ = filepath.Rel(basepath, path)
+
+		binary.BigEndian.PutUint16(p[:2], uint16(len(path)))
+		ar.WriteAt(p[:2], pcursor)
+		ar.WriteAt([]byte(path), pcursor+2)
+		pcursor += 2 + int64(len(path))
+
 		n, err := io.Copy(ar, file)
 		if err != nil {
 			log.Fatal(err)
 		}
 		ar.Write(guid)
-		cursor += n + 16
-		path, _ = filepath.Rel(basepath, path)
-		if len(path) > 248 {
-			pathes = append(pathes, path[len(path)-248:])
-		} else {
-			pathes = append(pathes, path+strings.Repeat(" ", 248-len(path)))
-		}
-		full = append(full, path)
-		return nil
-	})
-	ar.Write(eoa)
 
-	p := [256]byte{}
-	binary.BigEndian.PutUint64(p[:8], uint64(len(cursors)))
-	ar.WriteAt(p[:8], 0)
-	for i, c := range cursors {
-		binary.BigEndian.PutUint64(p[:8], uint64(c))
-		copy(p[8:], pathes[i])
-		ar.WriteAt(p[:], int64(i*256+8))
+		// binary.BigEndian.PutUint64(p[:8], fnv64Sum(path))
+		// binary.BigEndian.PutUint64(p[8:16], uint64(cursor))
+		// binary.BigEndian.PutUint64(p[16:], uint64(n))
+		// ar.WriteAt(p[:], 8+int64(i*len(p)))
+		m.push(path, uint64(cursor), uint64(n))
+
+		cursor += n + 16
+		file.Close()
 	}
 
+	m.seal()
+	ar.WriteAt(m.bytes(), 8)
 	if deleteoriginal {
 		for _, p := range full {
 			os.Remove(p)
@@ -153,7 +171,7 @@ func main() {
 
 		w.Header().Add("Access-Control-Allow-Origin", "*")
 
-		mergepath := "./gallery/" + parts[0] + "/" + parts[1] + "/merge"
+		mergepath := "./gallery/" + parts[0] + "/" + parts[1] + "/merge.webp"
 		if !strings.HasSuffix(mergepath, ".webp") {
 			http.ServeFile(w, r, "./gallery/"+parts[0]+"/"+parts[1]+"/"+parts[2])
 			return
