@@ -11,7 +11,7 @@ import (
 func Test_main(t *testing.T) {
 	get := func(w *sync.WaitGroup) {
 		defer w.Done()
-		resp, err := http.Get("http://127.0.0.1:8888/100.webp")
+		resp, err := http.Get("http://127.0.0.1:8888/1.xml")
 		if err != nil {
 
 			return
