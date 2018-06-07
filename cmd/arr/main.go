@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	_ "image/jpeg"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 var merger = flag.String("a", "", "directory to archive")
 var verbose = flag.Bool("v", false, "verbose output")
+var checksum = flag.Bool("checksum", false, "verify the sha256 of every file in the archive")
 var webserver = flag.String("w", "", "serve arrpkg over HTTP")
 var deloriginal = flag.Bool("xx", false, "delete original files after archiving")
 var splitter = flag.String("l", "", "list archive content")
@@ -137,22 +139,39 @@ func main() {
 	}
 
 	if *splitter != "" {
-		ar, err := ar.OpenArchive(*splitter, false)
+		a, err := ar.OpenArchive(*splitter, false)
 		if err != nil {
 			fmtPrintferr("Error: %v\n", err)
 			os.Exit(1)
 		}
 
 		const tf = "2006-01-02 15:04:05"
-		fmtPrintf("Mode      Modtime                 Offset       Size\n\n")
-		ar.Iterate(func(path string, mode uint32, modtime time.Time, start, l uint64) error {
-			fmtPrintf("%s %s %10x %10d %s\n", uint16mod(uint16(mode)),
-				modtime.Format(tf), start, l, path,
-			)
+		if *checksum {
+			fmtPrintf("Mode      Modtime                 Offset       Size  H\n\n")
+		} else {
+			fmtPrintf("Mode      Modtime                 Offset       Size\n\n")
+		}
+
+		var badFiles = 0
+		a.Iterate(func(path string, mode uint32, modtime time.Time, hash [32]byte, start, l uint64) error {
+			if *checksum {
+				_, err := a.Stream(ioutil.Discard, path)
+				flag := " · "
+				if err == ar.ErrCorruptedHash {
+					badFiles++
+					flag = " X "
+				}
+				fmtPrintf("%s %s %10x %10d %s %s\n", uint16mod(uint16(mode)), modtime.Format(tf), start, l, flag, path)
+			} else {
+				fmtPrintf("%s %s %10x %10d %s\n", uint16mod(uint16(mode)), modtime.Format(tf), start, l, path)
+			}
 			return nil
 		})
 
-		fmtPrintln("\nTotal files:", ar.TotalFiles(), ", created at:", ar.Created.Format(tf))
+		fmtPrintln("\nTotal files:", a.TotalFiles(), ", created at:", a.Created.Format(tf))
+		if badFiles > 0 {
+			fmtPrintferr("Found %d corrupted files!\n", badFiles)
+		}
 		return
 	}
 
@@ -177,7 +196,7 @@ func main() {
 						<tr><td> Mode </td><td> Modtime </td><td> Offset </td><td align=right> Size </td><td></td></tr>
 					`, *webserver, ar.TotalFiles(), ar.Created.Format(tf))))
 
-				ar.Iterate(func(path string, mode uint32, modtime time.Time, start, l uint64) error {
+				ar.Iterate(func(path string, mode uint32, modtime time.Time, hash [32]byte, start, l uint64) error {
 					w.Write([]byte(fmt.Sprintf(`<tr>
 						<td>%s</td>
 						<td>%s</td>

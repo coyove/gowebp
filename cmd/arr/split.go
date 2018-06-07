@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/draw"
 	"image/png"
+	"log"
 	"net/http"
 
 	"sync"
@@ -53,7 +54,7 @@ func (d *fileref) open(path string) (*ar.Archive, error) {
 	x := d.m[path]
 	// AGAIN:
 	if x == nil {
-		a, err := ar.OpenArchive(path, true)
+		a, err := ar.OpenArchive(path, false)
 		if err != nil {
 			return nil, err
 		}
@@ -80,8 +81,12 @@ func split(w http.ResponseWriter, path, name string) {
 
 	if a.Contains(name) {
 		if _, err := a.Stream(w, name); err != nil {
-			w.Header().Del("Content-Type")
-			errImage(w, err.Error())
+			if err == ar.ErrCorruptedHash {
+				log.Println("corrupted content:", name)
+			} else {
+				w.Header().Del("Content-Type")
+				errImage(w, err.Error())
+			}
 		}
 	} else {
 		errImage(w, "invalid image index")

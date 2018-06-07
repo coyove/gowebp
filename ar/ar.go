@@ -1,6 +1,8 @@
 package ar
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,6 +18,12 @@ import (
 
 var one uint64 = 1
 
+// ErrOmitFile omits the file when iterating
+var ErrOmitFile = errors.New("")
+
+// ErrCorruptedHash indicates an invalid hash
+var ErrCorruptedHash = errors.New("corrupted file")
+
 const (
 	guid     = "\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4"
 	dummy16  = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
@@ -26,6 +34,7 @@ type fileinfo struct {
 	path    string
 	mode    uint32
 	modtime uint32
+	hash    [sha256.Size]byte
 }
 
 // Archive represents a standard archive storage
@@ -34,7 +43,7 @@ type Archive struct {
 	cursor   *uint64map
 	size     int64
 	path     string
-	pathhash map[uint64]fileinfo
+	pathhash map[uint64]*fileinfo
 
 	Info    os.FileInfo
 	Created time.Time
@@ -82,29 +91,40 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 		return x, nil
 	}
 
-	x.pathhash = make(map[uint64]fileinfo)
+	x.pathhash = make(map[uint64]*fileinfo)
 	pathbuf := make([]byte, 256)
 	for i := uint32(0); i < count; i++ {
 		if _, err := ar.Read(p[:2]); err != nil {
 			return nil, err
 		}
+
+		fi := &fileinfo{}
+
 		pathlen := int(binary.BigEndian.Uint16(p[:2]))
 		if pathlen > len(pathbuf) {
 			pathbuf = make([]byte, pathlen)
 		}
+
 		if _, err := ar.Read(pathbuf[:4]); err != nil {
 			return nil, err
 		}
-		mode := binary.BigEndian.Uint32(pathbuf)
+		fi.mode = binary.BigEndian.Uint32(pathbuf)
+
 		if _, err := ar.Read(pathbuf[:4]); err != nil {
 			return nil, err
 		}
-		modtime := binary.BigEndian.Uint32(pathbuf)
+		fi.modtime = binary.BigEndian.Uint32(pathbuf)
+
+		if _, err := ar.Read(pathbuf[:sha256.Size]); err != nil {
+			return nil, err
+		}
+		copy(fi.hash[:], pathbuf[:sha256.Size])
+
 		if _, err := ar.Read(pathbuf[:pathlen]); err != nil {
 			return nil, err
 		}
-		path := string(pathbuf[:pathlen])
-		x.pathhash[fnv64Sum(path)] = fileinfo{path, mode, modtime}
+		fi.path = string(pathbuf[:pathlen])
+		x.pathhash[fnv64Sum(fi.path)] = fi
 	}
 
 	return x, nil
@@ -148,7 +168,19 @@ func (a *Archive) Stream(w io.Writer, path string) (int64, error) {
 		return 0, err
 	}
 
-	wr, err := io.CopyN(w, a.fd, int64(length))
+	var wr int64
+	var err error
+
+	if a.pathhash == nil {
+		wr, err = io.CopyN(w, a.fd, int64(length))
+	} else {
+		var h []byte
+		wr, h, err = hashcopyN(w, a.fd, int64(length))
+		if !bytes.Equal(h, a.pathhash[fnv64Sum(path)].hash[:]) {
+			return wr, ErrCorruptedHash
+		}
+	}
+
 	if err != nil {
 		return 0, err
 	}
@@ -163,32 +195,30 @@ func (a *Archive) TotalFiles() int {
 }
 
 // GetFileInfo returns the basic info of a file in a fast way
-func (a *Archive) GetFileInfo(path string) (mode uint16, modtime time.Time, ok bool) {
+func (a *Archive) GetFileInfo(path string) (mode uint16, modtime time.Time, hash [sha256.Size]byte, ok bool) {
 	h := fnv64Sum(path)
-	var fi fileinfo
+	var fi *fileinfo
 	if fi, ok = a.pathhash[h]; !ok {
 		return
 	}
 
 	mode = uint16(fi.mode)
 	modtime = time.Unix(int64(fi.modtime), 0)
+	hash = fi.hash
 	return
 }
 
 // Iterate iterates through files in the archive
-func (a *Archive) Iterate(cb func(string, uint32, time.Time, uint64, uint64) error) error {
+func (a *Archive) Iterate(cb func(string, uint32, time.Time, [sha256.Size]byte, uint64, uint64) error) error {
 	for _, x := range a.cursor.data {
 		y := a.pathhash[x[0]]
-		err := cb(y.path, y.mode, time.Unix(int64(y.modtime), 0), x[1], x[2])
+		err := cb(y.path, y.mode, time.Unix(int64(y.modtime), 0), y.hash, x[1], x[2])
 		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
-
-// ErrOmitFile omits the file when iterating
-var ErrOmitFile = errors.New("")
 
 // ArchiveOptions defines the options when archiving
 type ArchiveOptions struct {
@@ -211,6 +241,8 @@ type ArchiveOptions struct {
 func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 	full := make([]string, 0)
 	pathbuflen := 0
+
+	const fileHdr = 2 + 4 + 4 + sha256.Size
 
 	if err := filepath.Walk(dirpath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -244,7 +276,7 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 			panic("really?")
 		}
 		path, _ = filepath.Rel(dirpath, path)
-		pathbuflen += len(path) + 2 + 4 + 4
+		pathbuflen += len(path) + fileHdr
 		// info.Mode(): uint32
 		// info.ModTime(): uint32
 		return nil
@@ -309,15 +341,25 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 		if _, err := ar.WriteAt(p[:10], pcursor); err != nil {
 			return 0, err
 		}
-		if _, err := ar.WriteAt([]byte(path), pcursor+10); err != nil {
-			return 0, err
-		}
-		pcursor += 2 + 4 + 4 + int64(len(path))
+		pcursor += 10
 
-		n, err := io.Copy(ar, file)
+		// append the file content to the end of the archive
+		n, h, err := hashcopy(ar, file)
 		if err != nil {
 			return 0, err
 		}
+
+		// write hash at pcursor
+		if _, err := ar.WriteAt(h, pcursor); err != nil {
+			return 0, err
+		}
+
+		pcursor += sha256.Size
+		if _, err := ar.WriteAt([]byte(path), pcursor); err != nil {
+			return 0, err
+		}
+		pcursor += int64(len(path))
+
 		if _, err := ar.WriteString(guid); err != nil {
 			return 0, err
 		}
