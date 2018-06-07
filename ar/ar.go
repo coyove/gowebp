@@ -2,6 +2,7 @@ package ar
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -34,7 +35,9 @@ type Archive struct {
 	size     int64
 	path     string
 	pathhash map[uint64]fileinfo
-	Info     os.FileInfo
+
+	Info    os.FileInfo
+	Created time.Time
 }
 
 // OpenArchive opens an archive with the given path
@@ -64,7 +67,8 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 		return nil, fmt.Errorf("invalid header")
 	}
 
-	count := binary.BigEndian.Uint64(p[4:12])
+	count := binary.BigEndian.Uint32(p[4:8])
+	x.Created = time.Unix(int64(binary.BigEndian.Uint32(p[8:12])), 0)
 	if p[12] != *(*byte)(unsafe.Pointer(&one)) {
 		return nil, fmt.Errorf("unmatched endianness")
 	}
@@ -80,7 +84,7 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 
 	x.pathhash = make(map[uint64]fileinfo)
 	pathbuf := make([]byte, 256)
-	for i := uint64(0); i < count; i++ {
+	for i := uint32(0); i < count; i++ {
 		if _, err := ar.Read(p[:2]); err != nil {
 			return nil, err
 		}
@@ -172,10 +176,10 @@ func (a *Archive) GetFileInfo(path string) (mode uint16, modtime time.Time, ok b
 }
 
 // Iterate iterates through files in the archive
-func (a *Archive) Iterate(cb func(string, uint16, time.Time, uint64, uint64) error) error {
+func (a *Archive) Iterate(cb func(string, uint32, time.Time, uint64, uint64) error) error {
 	for _, x := range a.cursor.data {
 		y := a.pathhash[x[0]]
-		err := cb(y.path, uint16(y.mode), time.Unix(int64(y.modtime), 0), x[1], x[2])
+		err := cb(y.path, y.mode, time.Unix(int64(y.modtime), 0), x[1], x[2])
 		if err != nil {
 			return err
 		}
@@ -183,20 +187,30 @@ func (a *Archive) Iterate(cb func(string, uint16, time.Time, uint64, uint64) err
 	return nil
 }
 
+// ErrOmitFile omits the file when iterating
+var ErrOmitFile = errors.New("")
+
+// ArchiveOptions defines the options when archiving
+type ArchiveOptions struct {
+	DelOriginal      bool
+	OnIteratingFiles filepath.WalkFunc
+	OnEndIterating   func(pathes []string)
+	OnOpeningFile    func(path string) (*os.File, os.FileInfo, error)
+}
+
 // ArchiveDir archives the given directory into an archive
 // struct:
 // +---------------+----------+-------+------+-------+------+-- - -
 // | 24b metatable | jmptable | file1 | guid | file2 | guid | ...
 // +---------------+----------+-------+------+-------+------+-- - -
-// Currently there are only two fields in metatable:
+// Currently there are only 3 fields in metatable:
 //    (4b) Magic code, current: zzz0
-// 1. (8b) Total files
-// 2. (1b) Endianness, 1: Big endian, 0: Little endian
-func ArchiveDir(dirpath, arpath string, deloriginal bool) (int, error) {
+// 1. (4b) Total files
+// 2. (4b) Archive created time
+// 3. (1b) Endianness, 1: Big endian, 0: Little endian
+func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 	full := make([]string, 0)
 	pathbuflen := 0
-
-	os.Remove(arpath)
 
 	if err := filepath.Walk(dirpath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -205,6 +219,26 @@ func ArchiveDir(dirpath, arpath string, deloriginal bool) (int, error) {
 		if info.IsDir() {
 			return nil
 		}
+		info2, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if !os.SameFile(info, info2) {
+			// the path points to a symbolic link, we don't support it
+			return nil
+		}
+		if path == arpath {
+			return nil
+		}
+		if options.OnIteratingFiles != nil {
+			if err := options.OnIteratingFiles(path, info, err); err != nil {
+				if err == ErrOmitFile {
+					return nil
+				}
+				return err
+			}
+		}
+
 		full = append(full, path)
 		if len(path) > 65535 {
 			panic("really?")
@@ -218,6 +252,10 @@ func ArchiveDir(dirpath, arpath string, deloriginal bool) (int, error) {
 		return 0, err
 	}
 
+	if options.OnEndIterating != nil {
+		options.OnEndIterating(full)
+	}
+
 	ar, err := os.Create(arpath)
 	if err != nil {
 		return 0, err
@@ -226,7 +264,8 @@ func ArchiveDir(dirpath, arpath string, deloriginal bool) (int, error) {
 
 	p, count := [metasize]byte{'z', 'z', 'z', '0'}, len(full)
 
-	binary.BigEndian.PutUint64(p[4:12], uint64(count))
+	binary.BigEndian.PutUint32(p[4:8], uint32(count))
+	binary.BigEndian.PutUint32(p[8:12], uint32(time.Now().Unix()))
 	p[12] = *(*byte)(unsafe.Pointer(&one))
 	if _, err := ar.Write(p[:]); err != nil {
 		return 0, err
@@ -243,22 +282,29 @@ func ArchiveDir(dirpath, arpath string, deloriginal bool) (int, error) {
 	cursor, pcursor := int64(headerlen+metasize), int64(count)*metasize+metasize
 	m := uint64map{}
 	for _, path := range full {
-		file, err := os.Open(path)
+		var file *os.File
+		var st os.FileInfo
+		var err error
+
+		if options.OnOpeningFile == nil {
+			file, err = os.Open(path)
+			if err != nil {
+				return 0, err
+			}
+			st, err = os.Stat(path)
+		} else {
+			file, st, err = options.OnOpeningFile(path)
+		}
 		if err != nil {
 			return 0, err
 		}
 
-		st, err := os.Stat(path)
 		path, _ = filepath.Rel(dirpath, path)
 		path = strings.Replace(path, "\\", "/", -1)
 
 		binary.BigEndian.PutUint16(p[:2], uint16(len(path)))
-		if err == nil {
-			binary.BigEndian.PutUint32(p[2:6], uint32(st.Mode()))
-			binary.BigEndian.PutUint32(p[6:10], uint32(st.ModTime().Unix()))
-		} else {
-			binary.BigEndian.PutUint64(p[2:], 0)
-		}
+		binary.BigEndian.PutUint32(p[2:6], uint32(st.Mode()))
+		binary.BigEndian.PutUint32(p[6:10], uint32(st.ModTime().Unix()))
 
 		if _, err := ar.WriteAt(p[:10], pcursor); err != nil {
 			return 0, err
@@ -286,7 +332,7 @@ func ArchiveDir(dirpath, arpath string, deloriginal bool) (int, error) {
 	m.seal()
 	ar.WriteAt(m.bytes(), metasize)
 
-	if deloriginal {
+	if options.DelOriginal {
 		for _, p := range full {
 			os.Remove(p)
 		}
