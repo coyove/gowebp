@@ -1,4 +1,4 @@
-package main
+package gowebp
 
 /*
 #cgo CFLAGS: -I./libwebp-1.0.0/src
