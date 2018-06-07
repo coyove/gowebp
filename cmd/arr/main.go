@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	_ "image/jpeg"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 
 var merger = flag.String("a", "", "directory to archive")
 var verbose = flag.Bool("v", false, "verbose output")
+var webserver = flag.String("w", "", "serve arrpkg over HTTP")
+var deloriginal = flag.Bool("xx", false, "delete original files after archiving")
 var splitter = flag.String("l", "", "list archive content")
 
 func humansize(size int64) string {
@@ -99,6 +102,7 @@ func main() {
 		fmtPrintln("Output:   ", arpath)
 		count, i := 0, 0
 		_, err := ar.ArchiveDir(*merger, arpath, ar.ArchiveOptions{
+			DelOriginal: *deloriginal,
 			OnIteratingFiles: func(path string, info os.FileInfo, err error) error {
 				fmtPrintf("\r[%s] Search base: %s", _t(), _p(path))
 				return nil
@@ -140,7 +144,7 @@ func main() {
 		}
 
 		const tf = "2006-01-02 15:04:05"
-		fmtPrintf("Mode      Modtime (UTC)           Offset       Size\n\n")
+		fmtPrintf("Mode      Modtime                 Offset       Size\n\n")
 		ar.Iterate(func(path string, mode uint32, modtime time.Time, start, l uint64) error {
 			fmtPrintf("%s %s %10x %10d %s\n", uint16mod(uint16(mode)),
 				modtime.Format(tf), start, l, path,
@@ -152,37 +156,53 @@ func main() {
 		return
 	}
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		uri := r.URL.Path
-		if len(uri) < 1 {
-			w.WriteHeader(400)
-			return
+	if *webserver != "" {
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			uri := r.URL.Path
+			if len(uri) <= 1 {
+				ar, err := ar.OpenArchive(*webserver, false)
+				if err != nil {
+					fmtPrintferr("Error: %v\n", err)
+					os.Exit(1)
+				}
+
+				const tf = "2006-01-02 15:04:05"
+
+				w.Write([]byte(fmt.Sprintf(`
+					<html>
+					<title>%s</title>
+					<style>*{font-size:12px;font-family:"Lucida Console",Monaco,monospace}td,div{padding:4px}td{white-space:nowrap;width:1px}</style>
+					<div>Total files: %d, created at: %s</div>
+					<table border=1 style="border-collapse:collapse">
+						<tr><td> Mode </td><td> Modtime </td><td> Offset </td><td align=right> Size </td><td></td></tr>
+					`, *webserver, ar.TotalFiles(), ar.Created.Format(tf))))
+
+				ar.Iterate(func(path string, mode uint32, modtime time.Time, start, l uint64) error {
+					w.Write([]byte(fmt.Sprintf(`<tr>
+						<td>%s</td>
+						<td>%s</td>
+						<td>0x%010x</td>
+						<td align=right>%d</td>
+						<td><a href='/%s'>%s</a></td>
+					</tr>`,
+						uint16mod(uint16(mode)),
+						modtime.Format(tf), start, l, path, path,
+					)))
+					return nil
+				})
+
+				w.Write([]byte("</table></html>"))
+				ar.Close()
+				return
+			}
+			split(w, *webserver, uri[1:])
+		})
+
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			panic(err)
 		}
-
-		uri = strings.Replace(uri[1:], "thumbs/", "", -1)
-		parts := strings.Split(uri, "/")
-		if len(parts) != 3 {
-			w.WriteHeader(400)
-			return
-		}
-
-		w.Header().Add("Access-Control-Allow-Origin", "*")
-
-		mergepath := "./gallery/" + parts[0] + "/merge.pkg"
-		fullpath := "./gallery/" + parts[0] + "/" + parts[1] + "/" + parts[2]
-
-		if !strings.HasSuffix(mergepath, ".webp") {
-			http.ServeFile(w, r, fullpath)
-			return
-		}
-		if _, err := os.Stat(mergepath); err == nil {
-			split(w, mergepath, parts[2])
-		} else {
-			http.ServeFile(w, r, fullpath)
-		}
-	})
-
-	// log.SetFlags(log.Lshortfile | log.Ltime | log.Lmicroseconds)
-	// log.Println("hello", *listen)
-	// http.ListenAndServe(*listen, nil)
+		fmt.Println("Server started at", listener.Addr())
+		http.Serve(listener, nil)
+	}
 }

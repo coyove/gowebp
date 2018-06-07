@@ -79,7 +79,6 @@ func split(w http.ResponseWriter, path, name string) {
 	defer a.Close()
 
 	if a.Contains(name) {
-		// w.Header().Add("Content-Type", "image/webp")
 		if _, err := a.Stream(w, name); err != nil {
 			w.Header().Del("Content-Type")
 			errImage(w, err.Error())
