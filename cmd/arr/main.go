@@ -23,6 +23,7 @@ var checksum = flag.Bool("checksum", false, "verify the sha256 of every file in 
 var webserver = flag.String("w", "", "serve arrpkg over HTTP")
 var deloriginal = flag.Bool("xx", false, "delete original files after archiving")
 var splitter = flag.String("l", "", "list archive content")
+var extractor = flag.String("x", "", "extract the archive")
 
 func humansize(size int64) string {
 	var psize string
@@ -109,20 +110,24 @@ func main() {
 				fmtPrintf("\r[%s] Search base: %s", _t(), _p(path))
 				return nil
 			},
-			OnEndIterating: func(pathes []string) {
-				count = len(pathes)
+			OnEndIterating: func(paths []string) {
+				count = len(paths)
 				fmtPrintf("\r\n[%s] Found %d files, start archiving...\n", _t(), count)
 			},
 			OnOpeningFile: func(path string) (*os.File, os.FileInfo, error) {
-				file, err := os.Open(path)
-				if err != nil {
-					return nil, nil, err
-				}
 				st, err := os.Stat(path)
 				if err != nil {
 					return nil, nil, err
 				}
 				i++
+				if st.IsDir() {
+					fmtPrintf("\r[%s] [%02d%%] [%10s] %s", _t(), (i * 100 / count), "directory", _p(path))
+					return nil, st, nil
+				}
+				file, err := os.Open(path)
+				if err != nil {
+					return nil, nil, err
+				}
 				fmtPrintf("\r[%s] [%02d%%] [%10s] %s", _t(), (i * 100 / count), humansize(st.Size()), _p(path))
 				return file, st, nil
 			},
@@ -153,25 +158,37 @@ func main() {
 		}
 
 		var badFiles = 0
-		a.Iterate(func(path string, mode uint32, modtime time.Time, hash [32]byte, start, l uint64) error {
+		a.Iterate(func(info *ar.EntryInfo, start, l uint64) error {
 			if *checksum {
-				_, err := a.Stream(ioutil.Discard, path)
 				flag := " · "
-				if err == ar.ErrCorruptedHash {
-					badFiles++
-					flag = " X "
+				if !info.IsDir {
+					_, err := a.Stream(ioutil.Discard, info.Path)
+					if err == ar.ErrCorruptedHash {
+						badFiles++
+						flag = " X "
+					}
 				}
-				fmtPrintf("%s %s %10x %10d %s %s\n", uint16mod(uint16(mode)), modtime.Format(tf), start, l, flag, path)
+				fmtPrintf("%s%s %s %10x %10d %s %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, flag, info.Path)
 			} else {
-				fmtPrintf("%s %s %10x %10d %s\n", uint16mod(uint16(mode)), modtime.Format(tf), start, l, path)
+				fmtPrintf("%s%s %s %10x %10d %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, info.Path)
 			}
 			return nil
 		})
 
-		fmtPrintln("\nTotal files:", a.TotalFiles(), ", created at:", a.Created.Format(tf))
+		fmtPrintln("\nTotal entries:", a.TotalEntries(), ", created at:", a.Created.Format(tf))
 		if badFiles > 0 {
 			fmtPrintferr("Found %d corrupted files!\n", badFiles)
 		}
+		return
+	}
+
+	if *extractor != "" {
+		a, err := ar.OpenArchive(*extractor, false)
+		if err != nil {
+			fmtPrintferr("Error: %v\n", err)
+			os.Exit(1)
+		}
+		a.Extract("D:/aaa", ar.ExtractOptions{})
 		return
 	}
 
@@ -179,7 +196,7 @@ func main() {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			uri := r.URL.Path
 			if len(uri) <= 1 {
-				ar, err := ar.OpenArchive(*webserver, false)
+				a, err := ar.OpenArchive(*webserver, false)
 				if err != nil {
 					fmtPrintferr("Error: %v\n", err)
 					os.Exit(1)
@@ -191,27 +208,27 @@ func main() {
 					<html>
 					<title>%s</title>
 					<style>*{font-size:12px;font-family:"Lucida Console",Monaco,monospace}td,div{padding:4px}td{white-space:nowrap;width:1px}</style>
-					<div>Total files: %d, created at: %s</div>
+					<div>Total entries: %d, created at: %s</div>
 					<table border=1 style="border-collapse:collapse">
 						<tr><td> Mode </td><td> Modtime </td><td> Offset </td><td align=right> Size </td><td></td></tr>
-					`, *webserver, ar.TotalFiles(), ar.Created.Format(tf))))
+					`, *webserver, a.TotalEntries(), a.Created.Format(tf))))
 
-				ar.Iterate(func(path string, mode uint32, modtime time.Time, hash [32]byte, start, l uint64) error {
+				a.Iterate(func(info *ar.EntryInfo, start, l uint64) error {
 					w.Write([]byte(fmt.Sprintf(`<tr>
-						<td>%s</td>
+						<td>%s%s</td>
 						<td>%s</td>
 						<td>0x%010x</td>
 						<td align=right>%d</td>
 						<td><a href='/%s'>%s</a></td>
 					</tr>`,
-						uint16mod(uint16(mode)),
-						modtime.Format(tf), start, l, path, path,
+						info.Dirstring(), uint16mod(uint16(info.Mode)),
+						info.Modtime.Format(tf), start, l, info.Path, info.Path,
 					)))
 					return nil
 				})
 
 				w.Write([]byte("</table></html>"))
-				ar.Close()
+				a.Close()
 				return
 			}
 			split(w, *webserver, uri[1:])

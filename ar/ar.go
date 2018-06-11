@@ -25,16 +25,28 @@ var ErrOmitFile = errors.New("")
 var ErrCorruptedHash = errors.New("corrupted file")
 
 const (
-	guid     = "\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4"
+	dirguid  = "\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4"
 	dummy16  = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 	metasize = 24
+
+	DirFlag = 0xfedcba9876543210
 )
 
-type fileinfo struct {
-	path    string
-	mode    uint32
-	modtime uint32
-	hash    [sha256.Size]byte
+type EntryInfo struct {
+	Path    string
+	Modtime time.Time
+	Hash    [sha256.Size]byte
+	Mode    uint32
+	IsDir   bool
+	score   byte
+}
+
+func (e *EntryInfo) Dirstring() string {
+	dir := "d"
+	if !e.IsDir {
+		dir = "-"
+	}
+	return dir
 }
 
 // Archive represents a standard archive storage
@@ -43,7 +55,7 @@ type Archive struct {
 	cursor   *uint64map
 	size     int64
 	path     string
-	pathhash map[uint64]*fileinfo
+	pathhash map[uint64]*EntryInfo
 
 	Info    os.FileInfo
 	Created time.Time
@@ -91,14 +103,14 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 		return x, nil
 	}
 
-	x.pathhash = make(map[uint64]*fileinfo)
+	x.pathhash = make(map[uint64]*EntryInfo)
 	pathbuf := make([]byte, 256)
 	for i := uint32(0); i < count; i++ {
 		if _, err := ar.Read(p[:2]); err != nil {
 			return nil, err
 		}
 
-		fi := &fileinfo{}
+		fi := &EntryInfo{}
 
 		pathlen := int(binary.BigEndian.Uint16(p[:2]))
 		if pathlen > len(pathbuf) {
@@ -108,23 +120,24 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 		if _, err := ar.Read(pathbuf[:4]); err != nil {
 			return nil, err
 		}
-		fi.mode = binary.BigEndian.Uint32(pathbuf)
+		fi.Mode = binary.BigEndian.Uint32(pathbuf)
 
 		if _, err := ar.Read(pathbuf[:4]); err != nil {
 			return nil, err
 		}
-		fi.modtime = binary.BigEndian.Uint32(pathbuf)
+		fi.Modtime = time.Unix(int64(binary.BigEndian.Uint32(pathbuf)), 0)
 
 		if _, err := ar.Read(pathbuf[:sha256.Size]); err != nil {
 			return nil, err
 		}
-		copy(fi.hash[:], pathbuf[:sha256.Size])
+		copy(fi.Hash[:], pathbuf[:sha256.Size])
+		fi.IsDir = bytes.Equal(fi.Hash[:], []byte(dirguid))
 
 		if _, err := ar.Read(pathbuf[:pathlen]); err != nil {
 			return nil, err
 		}
-		fi.path = string(pathbuf[:pathlen])
-		x.pathhash[fnv64Sum(fi.path)] = fi
+		fi.Path = string(pathbuf[:pathlen])
+		x.pathhash[fnv64Sum(fi.Path)] = fi
 	}
 
 	return x, nil
@@ -150,7 +163,11 @@ func (a *Archive) Close() error {
 }
 
 func (a *Archive) GetFile(path string) (startPos uint64, size uint64, ok bool) {
-	return a.cursor.get(path)
+	startPos, size, ok = a.cursor.get(path)
+	if startPos == DirFlag && size == DirFlag {
+		ok = false
+	}
+	return
 }
 
 func (a *Archive) Contains(path string) bool {
@@ -176,7 +193,7 @@ func (a *Archive) Stream(w io.Writer, path string) (int64, error) {
 	} else {
 		var h []byte
 		wr, h, err = hashcopyN(w, a.fd, int64(length))
-		if !bytes.Equal(h, a.pathhash[fnv64Sum(path)].hash[:]) {
+		if !bytes.Equal(h, a.pathhash[fnv64Sum(path)].Hash[:]) {
 			return wr, ErrCorruptedHash
 		}
 	}
@@ -190,30 +207,28 @@ func (a *Archive) Stream(w io.Writer, path string) (int64, error) {
 	return wr, nil
 }
 
-func (a *Archive) TotalFiles() int {
+func (a *Archive) TotalEntries() int {
 	return len(a.cursor.data)
 }
 
-// GetFileInfo returns the basic info of a file in a fast way
-func (a *Archive) GetFileInfo(path string) (mode uint16, modtime time.Time, hash [sha256.Size]byte, ok bool) {
-	h := fnv64Sum(path)
-	var fi *fileinfo
-	if fi, ok = a.pathhash[h]; !ok {
-		return
+// GetInfo returns the basic info of a file in a fast way
+func (a *Archive) GetInfo(path string) (info *EntryInfo, ok bool) {
+	if a.pathhash == nil {
+		return nil, false
 	}
-
-	mode = uint16(fi.mode)
-	modtime = time.Unix(int64(fi.modtime), 0)
-	hash = fi.hash
-	return
+	h := fnv64Sum(path)
+	fi, ok := a.pathhash[h]
+	return fi, ok
 }
 
 // Iterate iterates through files in the archive
-func (a *Archive) Iterate(cb func(string, uint32, time.Time, [sha256.Size]byte, uint64, uint64) error) error {
+func (a *Archive) Iterate(cb func(*EntryInfo, uint64, uint64) error) error {
 	for _, x := range a.cursor.data {
 		y := a.pathhash[x[0]]
-		err := cb(y.path, y.mode, time.Unix(int64(y.modtime), 0), y.hash, x[1], x[2])
-		if err != nil {
+		if y.IsDir {
+			x[1], x[2] = 0, 0
+		}
+		if err := cb(y, x[1], x[2]); err != nil {
 			return err
 		}
 	}
@@ -224,7 +239,7 @@ func (a *Archive) Iterate(cb func(string, uint32, time.Time, [sha256.Size]byte, 
 type ArchiveOptions struct {
 	DelOriginal      bool
 	OnIteratingFiles filepath.WalkFunc
-	OnEndIterating   func(pathes []string)
+	OnEndIterating   func(paths []string)
 	OnOpeningFile    func(path string) (*os.File, os.FileInfo, error)
 }
 
@@ -247,9 +262,6 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 	if err := filepath.Walk(dirpath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
-		}
-		if info.IsDir() {
-			return nil
 		}
 		info2, err := os.Stat(path)
 		if err != nil {
@@ -319,11 +331,13 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 		var err error
 
 		if options.OnOpeningFile == nil {
-			file, err = os.Open(path)
+			st, err = os.Stat(path)
 			if err != nil {
 				return 0, err
 			}
-			st, err = os.Stat(path)
+			if !st.IsDir() {
+				file, err = os.Open(path)
+			}
 		} else {
 			file, st, err = options.OnOpeningFile(path)
 		}
@@ -343,6 +357,19 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 		}
 		pcursor += 10
 
+		if st.IsDir() {
+			if _, err := ar.WriteAt([]byte(dirguid), pcursor); err != nil {
+				return 0, err
+			}
+			pcursor += sha256.Size
+			if _, err := ar.WriteAt([]byte(path), pcursor); err != nil {
+				return 0, err
+			}
+			pcursor += int64(len(path))
+			m.push(path, DirFlag, DirFlag)
+			continue
+		}
+
 		// append the file content to the end of the archive
 		n, h, err := hashcopy(ar, file)
 		if err != nil {
@@ -359,13 +386,9 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 			return 0, err
 		}
 		pcursor += int64(len(path))
-
-		if _, err := ar.WriteString(guid); err != nil {
-			return 0, err
-		}
 		m.push(path, uint64(cursor), uint64(n))
 
-		cursor += n + 16
+		cursor += n
 		if err := file.Close(); err != nil {
 			return 0, err
 		}
