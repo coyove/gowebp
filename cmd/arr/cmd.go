@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -11,7 +12,9 @@ var flags struct {
 	verbose     bool
 	checksum    bool
 	deloriginal bool
+	delimm      bool
 	paths       []string
+	xdest       string
 }
 
 func panicf(format string, a ...interface{}) {
@@ -19,8 +22,13 @@ func panicf(format string, a ...interface{}) {
 }
 
 func parseFlags() {
+	usage := func() {
+		fmt.Printf("Usage: arr [axlw]vXkC\n")
+	}
+
 	defer func() {
 		if r := recover(); r != nil {
+			usage()
 			fmt.Printf("Invalid argument(s):\n%v\n", r)
 			os.Exit(1)
 		}
@@ -28,19 +36,41 @@ func parseFlags() {
 
 	args := os.Args
 	flags.paths = make([]string, 0)
+	flags.xdest, _ = filepath.Abs(".")
+	nextIsDest := false
 
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
 		if _, err := os.Stat(arg); err == nil {
+			arg, _ = filepath.Abs(arg)
+			arg = strings.Replace(arg, "\\", "/", -1)
+
 			if strings.HasSuffix(arg, "/") {
 				arg = arg[:len(arg)-1]
 			}
-			flags.paths = append(flags.paths, arg)
+
+			if nextIsDest {
+				nextIsDest = false
+				flags.xdest = arg
+			} else {
+				flags.paths = append(flags.paths, arg)
+			}
 			continue
 		}
 
-		if strings.HasPrefix(arg, "-") {
+		if nextIsDest {
+			nextIsDest = false
+			flags.xdest = arg
+			continue
+		}
+
+		for strings.HasPrefix(arg, "-") {
 			arg = arg[1:]
+		}
+
+		if arg == "help" {
+			usage()
+			os.Exit(0)
 		}
 
 		for _, p := range arg {
@@ -52,7 +82,12 @@ func parseFlags() {
 				flags.action = byte(p)
 			case 'v':
 				flags.verbose = true
+			case 'C':
+				nextIsDest = true
 			case 'X':
+				if flags.deloriginal {
+					flags.delimm = true
+				}
 				flags.deloriginal = true
 			case 'k':
 				flags.checksum = true

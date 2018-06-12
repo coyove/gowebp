@@ -238,6 +238,7 @@ func (a *Archive) Iterate(cb func(*EntryInfo, uint64, uint64) error) error {
 // ArchiveOptions defines the options when archiving
 type ArchiveOptions struct {
 	DelOriginal      bool
+	DelImmediately   bool
 	OnIteratingFiles filepath.WalkFunc
 	OnEndIterating   func(paths []string)
 	OnOpeningFile    func(path string) (*os.File, os.FileInfo, error)
@@ -325,7 +326,7 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 
 	cursor, pcursor := int64(headerlen+metasize), int64(count)*metasize+metasize
 	m := uint64map{}
-	for _, path := range full {
+	for i, path := range full {
 		var file *os.File
 		var st os.FileInfo
 		var err error
@@ -391,6 +392,10 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 		cursor += n
 		if err := file.Close(); err != nil {
 			return 0, err
+		}
+
+		if options.DelOriginal && options.DelImmediately && !st.IsDir() {
+			os.Remove(full[i])
 		}
 	}
 

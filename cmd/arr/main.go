@@ -78,7 +78,8 @@ func doArchive(path string, x bool) {
 		fmtPrintln("Output:   ", arpath)
 		count, i := 0, 0
 		_, err := ar.ArchiveDir(path, arpath, ar.ArchiveOptions{
-			DelOriginal: flags.deloriginal,
+			DelOriginal:    flags.deloriginal,
+			DelImmediately: flags.delimm,
 			OnIteratingFiles: func(path string, info os.FileInfo, err error) error {
 				fmtPrintf("\r[%s] Search base: %s", _t(), _p(path))
 				return nil
@@ -94,7 +95,7 @@ func doArchive(path string, x bool) {
 				}
 				i++
 				if st.IsDir() {
-					fmtPrintf("\r[%s] [%02d%%] [%10s] %s", _t(), (i * 100 / count), "directory", _p(path))
+					fmtPrintf("\r[%s] [%02d%%] [%10s] %s", _t(), (i * 100 / count), "   Fdir   ", _p(path))
 					return nil, st, nil
 				}
 				file, err := os.Open(path)
@@ -120,13 +121,14 @@ func doArchive(path string, x bool) {
 			os.Exit(1)
 		}
 
-		fmtPrintln("Archive:", path, ", Size:", humansize(a.Info.Size()))
+		fmtPrintln("Extract:", path, ", Size:", humansize(a.Info.Size()))
+		fmtPrintln("Output :", flags.xdest)
 
 		i, count := 0, a.TotalEntries()
-		a.Extract(".", ar.ExtractOptions{
+		a.Extract(flags.xdest, ar.ExtractOptions{
 			OnBeforeExtractingEntry: func(info *ar.EntryInfo) {
 				i++
-				fmtPrintf("\r[%s] [%02d%%] %s", _t(), (i * 100 / count), _p(path))
+				fmtPrintf("\r[%s] [%02d%%] %s", _t(), (i * 100 / count), _p(info.Path))
 			},
 		})
 
@@ -143,9 +145,9 @@ func doList(path string) {
 
 	const tf = "2006-01-02 15:04:05"
 	if flags.checksum {
-		fmtPrintf("Mode      Modtime                 Offset       Size  H\n\n")
+		fmtPrintf("Mode       Modtime                 Offset       Size  H\n\n")
 	} else {
-		fmtPrintf("Mode      Modtime                 Offset       Size\n\n")
+		fmtPrintf("Mode       Modtime                 Offset       Size\n\n")
 	}
 
 	var badFiles = 0
