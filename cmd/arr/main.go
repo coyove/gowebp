@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"flag"
 	"fmt"
 	_ "image/jpeg"
 	"io/ioutil"
@@ -17,13 +16,13 @@ import (
 	"github.com/coyove/gowebp/ar"
 )
 
-var merger = flag.String("a", "", "directory to archive")
-var verbose = flag.Bool("v", false, "verbose output")
-var checksum = flag.Bool("checksum", false, "verify the sha256 of every file in the archive")
-var webserver = flag.String("w", "", "serve arrpkg over HTTP")
-var deloriginal = flag.Bool("xx", false, "delete original files after archiving")
-var splitter = flag.String("l", "", "list archive content")
-var extractor = flag.String("x", "", "extract the archive")
+// var merger = flag.String("a", "", "directory to archive")
+// var verbose = flag.Bool("v", false, "verbose output")
+// var checksum = flag.Bool("checksum", false, "verify the sha256 of every file in the archive")
+// var webserver = flag.String("w", "", "serve arrpkg over HTTP")
+// var deloriginal = flag.Bool("xx", false, "delete original files after archiving")
+// var splitter = flag.String("l", "", "list archive content")
+// var extractor = flag.String("x", "", "extract the archive")
 
 func humansize(size int64) string {
 	var psize string
@@ -51,61 +50,35 @@ func uint16mod(m uint16) string {
 	return buf.String()
 }
 
-func fmtPrintln(args ...interface{}) {
-	if !*verbose {
-		return
-	}
-	fmt.Println(args...)
-}
-
-func fmtPrintf(format string, args ...interface{}) {
-	if !*verbose {
-		return
-	}
-	fmt.Printf(format, args...)
-}
-
-func fmtPrintferr(format string, args ...interface{}) {
-	os.Stderr.WriteString(fmt.Sprintf(format, args...))
-}
-
-func main() {
-	flag.Parse()
-
-	if *splitter != "" {
-		*verbose = true
-	}
-
-	fmtPrintln("\nArr archive tool", runtime.GOOS, runtime.GOARCH, runtime.Version(), "\n")
-
-	if *merger != "" {
-		start := time.Now()
-		lastp := ""
-		_p := func(p string) string {
-			p, _ = filepath.Rel(*merger, p)
-			if lastp == "" || len(p) >= len(lastp) {
-				lastp = p
-				return p
-			}
-			n := len(lastp) - len(p)
+func doArchive(path string, x bool) {
+	start := time.Now()
+	lastp := ""
+	_p := func(p string) string {
+		p, _ = filepath.Rel(path, p)
+		if lastp == "" || len(p) >= len(lastp) {
 			lastp = p
-			return p + strings.Repeat(" ", n)
+			return p
 		}
-		_t := func() string {
-			secs := int64(time.Now().Sub(start).Seconds())
-			hrs := secs / 3600
-			mins := (secs - hrs*3600) / 60
-			secs = secs - hrs*3600 - mins*60
-			return fmt.Sprintf("%02d:%02d:%02d", hrs, mins, secs)
-		}
+		n := len(lastp) - len(p)
+		lastp = p
+		return p + strings.Repeat(" ", n)
+	}
+	_t := func() string {
+		secs := int64(time.Now().Sub(start).Seconds())
+		hrs := secs / 3600
+		mins := (secs - hrs*3600) / 60
+		secs = secs - hrs*3600 - mins*60
+		return fmt.Sprintf("%02d:%02d:%02d", hrs, mins, secs)
+	}
 
-		arpath := filepath.Join(filepath.Dir(*merger), filepath.Base(*merger)+".arrpkg")
+	if !x {
+		arpath := filepath.Join(filepath.Dir(path), filepath.Base(path)+".arrpkg")
 
-		fmtPrintln("Archiving:", *merger)
+		fmtPrintln("Archiving:", path)
 		fmtPrintln("Output:   ", arpath)
 		count, i := 0, 0
-		_, err := ar.ArchiveDir(*merger, arpath, ar.ArchiveOptions{
-			DelOriginal: *deloriginal,
+		_, err := ar.ArchiveDir(path, arpath, ar.ArchiveOptions{
+			DelOriginal: flags.deloriginal,
 			OnIteratingFiles: func(path string, info os.FileInfo, err error) error {
 				fmtPrintf("\r[%s] Search base: %s", _t(), _p(path))
 				return nil
@@ -140,63 +113,88 @@ func main() {
 		st, _ := os.Stat(arpath)
 		size := st.Size()
 		fmtPrintln("\nFinished in", time.Now().Sub(start).Nanoseconds()/1e6, "ms, size:", size, "bytes /", humansize(size))
-		return
-	}
-
-	if *splitter != "" {
-		a, err := ar.OpenArchive(*splitter, false)
+	} else {
+		a, err := ar.OpenArchive(path, false)
 		if err != nil {
 			fmtPrintferr("Error: %v\n", err)
 			os.Exit(1)
 		}
 
-		const tf = "2006-01-02 15:04:05"
-		if *checksum {
-			fmtPrintf("Mode      Modtime                 Offset       Size  H\n\n")
-		} else {
-			fmtPrintf("Mode      Modtime                 Offset       Size\n\n")
-		}
+		fmtPrintln("Archive:", path, ", Size:", humansize(a.Info.Size()))
 
-		var badFiles = 0
-		a.Iterate(func(info *ar.EntryInfo, start, l uint64) error {
-			if *checksum {
-				flag := " · "
-				if !info.IsDir {
-					_, err := a.Stream(ioutil.Discard, info.Path)
-					if err == ar.ErrCorruptedHash {
-						badFiles++
-						flag = " X "
-					}
-				}
-				fmtPrintf("%s%s %s %10x %10d %s %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, flag, info.Path)
-			} else {
-				fmtPrintf("%s%s %s %10x %10d %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, info.Path)
-			}
-			return nil
+		i, count := 0, a.TotalEntries()
+		a.Extract(".", ar.ExtractOptions{
+			OnBeforeExtractingEntry: func(info *ar.EntryInfo) {
+				i++
+				fmtPrintf("\r[%s] [%02d%%] %s", _t(), (i * 100 / count), _p(path))
+			},
 		})
 
-		fmtPrintln("\nTotal entries:", a.TotalEntries(), ", created at:", a.Created.Format(tf))
-		if badFiles > 0 {
-			fmtPrintferr("Found %d corrupted files!\n", badFiles)
-		}
-		return
+		fmtPrintln("\nFinished in", time.Now().Sub(start).Nanoseconds()/1e6, "ms")
+	}
+}
+
+func doList(path string) {
+	a, err := ar.OpenArchive(path, false)
+	if err != nil {
+		fmtPrintferr("Error: %v\n", err)
+		os.Exit(1)
 	}
 
-	if *extractor != "" {
-		a, err := ar.OpenArchive(*extractor, false)
-		if err != nil {
-			fmtPrintferr("Error: %v\n", err)
-			os.Exit(1)
-		}
-		a.Extract("D:/aaa", ar.ExtractOptions{})
-		return
+	const tf = "2006-01-02 15:04:05"
+	if flags.checksum {
+		fmtPrintf("Mode      Modtime                 Offset       Size  H\n\n")
+	} else {
+		fmtPrintf("Mode      Modtime                 Offset       Size\n\n")
 	}
 
-	if *webserver != "" {
+	var badFiles = 0
+	a.Iterate(func(info *ar.EntryInfo, start, l uint64) error {
+		if flags.checksum {
+			flag := " · "
+			if !info.IsDir {
+				_, err := a.Stream(ioutil.Discard, info.Path)
+				if err == ar.ErrCorruptedHash {
+					badFiles++
+					flag = " X "
+				}
+			}
+			fmtPrintf("%s%s %s %10x %10d %s %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, flag, info.Path)
+		} else {
+			fmtPrintf("%s%s %s %10x %10d %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, info.Path)
+		}
+		return nil
+	})
+
+	fmtPrintln("\nTotal entries:", a.TotalEntries(), ", created at:", a.Created.Format(tf))
+	if badFiles > 0 {
+		fmtPrintferr("Found %d corrupted files!\n", badFiles)
+	}
+}
+
+func main() {
+	parseFlags()
+
+	fmtPrintln("\nArr archive tool", runtime.GOOS, runtime.GOARCH, runtime.Version(), "\n")
+
+	switch flags.action {
+	case 'a':
+		for _, path := range flags.paths {
+			doArchive(path, false)
+		}
+	case 'l':
+		for _, path := range flags.paths {
+			doList(path)
+		}
+	case 'x':
+		for _, path := range flags.paths {
+			doArchive(path, true)
+		}
+	case 'w':
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			uri := r.URL.Path
 			if len(uri) <= 1 {
-				a, err := ar.OpenArchive(*webserver, false)
+				a, err := ar.OpenArchive(flags.paths[0], false)
 				if err != nil {
 					fmtPrintferr("Error: %v\n", err)
 					os.Exit(1)
@@ -211,7 +209,7 @@ func main() {
 					<div>Total entries: %d, created at: %s</div>
 					<table border=1 style="border-collapse:collapse">
 						<tr><td> Mode </td><td> Modtime </td><td> Offset </td><td align=right> Size </td><td></td></tr>
-					`, *webserver, a.TotalEntries(), a.Created.Format(tf))))
+					`, flags.paths[0], a.TotalEntries(), a.Created.Format(tf))))
 
 				a.Iterate(func(info *ar.EntryInfo, start, l uint64) error {
 					w.Write([]byte(fmt.Sprintf(`<tr>
@@ -231,7 +229,7 @@ func main() {
 				a.Close()
 				return
 			}
-			split(w, *webserver, uri[1:])
+			split(w, flags.paths[0], uri[1:])
 		})
 
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
