@@ -1,4 +1,4 @@
-package ar
+package main
 
 import (
 	"bytes"
@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unsafe"
+
+	"github.com/coyove/common/rand"
 )
 
 var one uint64 = 1
@@ -240,7 +242,7 @@ type ArchiveOptions struct {
 	DelOriginal      bool
 	DelImmediately   bool
 	OnIteratingFiles filepath.WalkFunc
-	OnEndIterating   func(paths []string)
+	OnEndIterating   func(totalEntries int)
 	OnOpeningFile    func(path string) (*os.File, os.FileInfo, error)
 }
 
@@ -255,8 +257,10 @@ type ArchiveOptions struct {
 // 2. (4b) Archive created time
 // 3. (1b) Endianness, 1: Big endian, 0: Little endian
 func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
-	full := make([]string, 0)
-	pathbuflen := 0
+	pathbuflen, full := 0, make([]string, 0)
+	var pathslist *os.File
+	var pathslistpath string
+	var totalFoundEntries int
 
 	const fileHdr = 2 + 4 + 4 + sha256.Size
 
@@ -283,11 +287,23 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 				return err
 			}
 		}
-
-		full = append(full, path)
 		if len(path) > 65535 {
 			panic("really?")
 		}
+
+		if pathslist != nil {
+			pathslist.WriteString(path + "\n")
+		} else {
+			full = append(full, path)
+			if len(full) > 1024 {
+				pathslistpath = arpath + "." + fmt.Sprintf("%x", rand.New().Fetch(4)) + ".paths"
+				pathslist, _ = os.Create(pathslistpath)
+				pathslist.WriteString(strings.Join(full, "\n") + "\n")
+				full = full[:0]
+			}
+		}
+		totalFoundEntries++
+
 		path, _ = filepath.Rel(dirpath, path)
 		pathbuflen += len(path) + fileHdr
 		// info.Mode(): uint32
@@ -298,7 +314,7 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 	}
 
 	if options.OnEndIterating != nil {
-		options.OnEndIterating(full)
+		options.OnEndIterating(totalFoundEntries)
 	}
 
 	ar, err := os.Create(arpath)
@@ -326,7 +342,7 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 
 	cursor, pcursor := int64(headerlen+metasize), int64(count)*metasize+metasize
 	m := uint64map{}
-	for i, path := range full {
+	err = iteratePaths(full, pathslist, func(i int, path string) error {
 		var file *os.File
 		var st os.FileInfo
 		var err error
@@ -334,7 +350,7 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 		if options.OnOpeningFile == nil {
 			st, err = os.Stat(path)
 			if err != nil {
-				return 0, err
+				return err
 			}
 			if !st.IsDir() {
 				file, err = os.Open(path)
@@ -343,7 +359,7 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 			file, st, err = options.OnOpeningFile(path)
 		}
 		if err != nil {
-			return 0, err
+			return err
 		}
 
 		path, _ = filepath.Rel(dirpath, path)
@@ -354,58 +370,68 @@ func ArchiveDir(dirpath, arpath string, options ArchiveOptions) (int, error) {
 		binary.BigEndian.PutUint32(p[6:10], uint32(st.ModTime().Unix()))
 
 		if _, err := ar.WriteAt(p[:10], pcursor); err != nil {
-			return 0, err
+			return err
 		}
 		pcursor += 10
 
 		if st.IsDir() {
 			if _, err := ar.WriteAt([]byte(dirguid), pcursor); err != nil {
-				return 0, err
+				return err
 			}
 			pcursor += sha256.Size
 			if _, err := ar.WriteAt([]byte(path), pcursor); err != nil {
-				return 0, err
+				return err
 			}
 			pcursor += int64(len(path))
 			m.push(path, DirFlag, DirFlag)
-			continue
+			return nil
 		}
 
 		// append the file content to the end of the archive
 		n, h, err := hashcopy(ar, file)
 		if err != nil {
-			return 0, err
+			return err
 		}
 
 		// write hash at pcursor
 		if _, err := ar.WriteAt(h, pcursor); err != nil {
-			return 0, err
+			return err
 		}
 
 		pcursor += sha256.Size
 		if _, err := ar.WriteAt([]byte(path), pcursor); err != nil {
-			return 0, err
+			return err
 		}
 		pcursor += int64(len(path))
 		m.push(path, uint64(cursor), uint64(n))
 
 		cursor += n
 		if err := file.Close(); err != nil {
-			return 0, err
+			return err
 		}
 
 		if options.DelOriginal && options.DelImmediately && !st.IsDir() {
 			os.Remove(full[i])
 		}
+
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 
 	m.seal()
 	ar.WriteAt(m.bytes(), metasize)
 
-	if options.DelOriginal {
+	if options.DelOriginal && !options.DelImmediately {
 		for _, p := range full {
 			os.Remove(p)
 		}
+	}
+
+	if pathslist != nil {
+		pathslist.Close()
+		// os.Remove(pathslistpath)
 	}
 
 	return count, nil

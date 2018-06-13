@@ -12,8 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/coyove/gowebp/ar"
 )
 
 // var merger = flag.String("a", "", "directory to archive")
@@ -77,16 +75,16 @@ func doArchive(path string, x bool) {
 		fmtPrintln("Archiving:", path)
 		fmtPrintln("Output:   ", arpath)
 		count, i := 0, 0
-		_, err := ar.ArchiveDir(path, arpath, ar.ArchiveOptions{
+		_, err := ArchiveDir(path, arpath, ArchiveOptions{
 			DelOriginal:    flags.deloriginal,
 			DelImmediately: flags.delimm,
 			OnIteratingFiles: func(path string, info os.FileInfo, err error) error {
 				fmtPrintf("\r[%s] Search base: %s", _t(), _p(path))
 				return nil
 			},
-			OnEndIterating: func(paths []string) {
-				count = len(paths)
-				fmtPrintf("\r\n[%s] Found %d files, start archiving...\n", _t(), count)
+			OnEndIterating: func(c int) {
+				count = c
+				fmtPrintf("\r\n[%s] Found %d files, start archiving...\n", _t(), c)
 			},
 			OnOpeningFile: func(path string) (*os.File, os.FileInfo, error) {
 				st, err := os.Stat(path)
@@ -115,7 +113,7 @@ func doArchive(path string, x bool) {
 		size := st.Size()
 		fmtPrintln("\nFinished in", time.Now().Sub(start).Nanoseconds()/1e6, "ms, size:", size, "bytes /", humansize(size))
 	} else {
-		a, err := ar.OpenArchive(path, false)
+		a, err := OpenArchive(path, false)
 		if err != nil {
 			fmtPrintferr("Error: %v\n", err)
 			os.Exit(1)
@@ -125,19 +123,14 @@ func doArchive(path string, x bool) {
 		fmtPrintln("Output :", flags.xdest)
 
 		i, count := 0, a.TotalEntries()
-		a.Extract(flags.xdest, ar.ExtractOptions{
-			OnBeforeExtractingEntry: func(info *ar.EntryInfo) {
-				i++
-				fmtPrintf("\r[%s] [%02d%%] %s", _t(), (i * 100 / count), _p(info.Path))
-			},
-		})
+		Extract(flags.xdest)
 
 		fmtPrintln("\nFinished in", time.Now().Sub(start).Nanoseconds()/1e6, "ms")
 	}
 }
 
 func doList(path string) {
-	a, err := ar.OpenArchive(path, false)
+	a, err := OpenArchive(path, false)
 	if err != nil {
 		fmtPrintferr("Error: %v\n", err)
 		os.Exit(1)
@@ -151,12 +144,12 @@ func doList(path string) {
 	}
 
 	var badFiles = 0
-	a.Iterate(func(info *ar.EntryInfo, start, l uint64) error {
+	a.Iterate(func(info *EntryInfo, start, l uint64) error {
 		if flags.checksum {
 			flag := " · "
 			if !info.IsDir {
 				_, err := a.Stream(ioutil.Discard, info.Path)
-				if err == ar.ErrCorruptedHash {
+				if err == ErrCorruptedHash {
 					badFiles++
 					flag = " X "
 				}
@@ -196,7 +189,7 @@ func main() {
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			uri := r.URL.Path
 			if len(uri) <= 1 {
-				a, err := ar.OpenArchive(flags.paths[0], false)
+				a, err := OpenArchive(flags.paths[0], false)
 				if err != nil {
 					fmtPrintferr("Error: %v\n", err)
 					os.Exit(1)
@@ -213,7 +206,7 @@ func main() {
 						<tr><td> Mode </td><td> Modtime </td><td> Offset </td><td align=right> Size </td><td></td></tr>
 					`, flags.paths[0], a.TotalEntries(), a.Created.Format(tf))))
 
-				a.Iterate(func(info *ar.EntryInfo, start, l uint64) error {
+				a.Iterate(func(info *EntryInfo, start, l uint64) error {
 					w.Write([]byte(fmt.Sprintf(`<tr>
 						<td>%s%s</td>
 						<td>%s</td>
