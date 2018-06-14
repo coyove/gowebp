@@ -8,13 +8,14 @@ import (
 )
 
 var flags struct {
-	action      byte
-	verbose     bool
-	checksum    bool
-	deloriginal bool
-	delimm      bool
-	paths       []string
-	xdest       string
+	action       byte
+	verbose      bool
+	checksum     bool
+	deloriginal  bool
+	ignoreerrors bool
+	delimm       bool
+	paths        []string
+	xdest        string
 }
 
 func panicf(format string, a ...interface{}) {
@@ -23,7 +24,7 @@ func panicf(format string, a ...interface{}) {
 
 func parseFlags() {
 	usage := func() {
-		fmt.Printf("Usage: arr [axlw]vXkC\n")
+		fmt.Printf("Usage: arr [axlw]vXkCf\n")
 	}
 
 	defer func() {
@@ -91,6 +92,8 @@ func parseFlags() {
 				flags.deloriginal = true
 			case 'k':
 				flags.checksum = true
+			case 'f':
+				flags.ignoreerrors = true
 			default:
 				panicf("unknown command: %s in %s", string(p), arg)
 			}
@@ -131,4 +134,21 @@ func fmtPrintf(format string, args ...interface{}) {
 
 func fmtPrintferr(format string, args ...interface{}) {
 	os.Stderr.WriteString(fmt.Sprintf(format, args...))
+}
+
+func fmtFatalErr(arg error) {
+	if arg == nil {
+		return
+	}
+
+	os.Stderr.WriteString(fmt.Sprintf("\nFatal error: %v\n", arg))
+	os.Exit(1)
+}
+
+func fmtMaybeErr(args ...interface{}) {
+	os.Stderr.WriteString("Error: " + fmt.Sprint(args...))
+	if flags.ignoreerrors {
+		return
+	}
+	os.Exit(1)
 }

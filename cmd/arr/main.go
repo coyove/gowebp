@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	_ "image/jpeg"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
-	"time"
 )
 
 // var merger = flag.String("a", "", "directory to archive")
@@ -49,121 +46,11 @@ func uint16mod(m uint16) string {
 }
 
 func doArchive(path string, x bool) {
-	start := time.Now()
-	lastp := ""
-	_p := func(p string) string {
-		p, _ = filepath.Rel(path, p)
-		if lastp == "" || len(p) >= len(lastp) {
-			lastp = p
-			return p
-		}
-		n := len(lastp) - len(p)
-		lastp = p
-		return p + strings.Repeat(" ", n)
-	}
-	_t := func() string {
-		secs := int64(time.Now().Sub(start).Seconds())
-		hrs := secs / 3600
-		mins := (secs - hrs*3600) / 60
-		secs = secs - hrs*3600 - mins*60
-		return fmt.Sprintf("%02d:%02d:%02d", hrs, mins, secs)
-	}
-
 	if !x {
 		arpath := filepath.Join(filepath.Dir(path), filepath.Base(path)+".arrpkg")
-
-		fmtPrintln("Archiving:", path)
-		fmtPrintln("Output:   ", arpath)
-		count, i := 0, 0
-		_, err := ArchiveDir(path, arpath, ArchiveOptions{
-			DelOriginal:    flags.deloriginal,
-			DelImmediately: flags.delimm,
-			OnIteratingFiles: func(path string, info os.FileInfo, err error) error {
-				fmtPrintf("\r[%s] Search base: %s", _t(), _p(path))
-				return nil
-			},
-			OnEndIterating: func(c int) {
-				count = c
-				fmtPrintf("\r\n[%s] Found %d files, start archiving...\n", _t(), c)
-			},
-			OnOpeningFile: func(path string) (*os.File, os.FileInfo, error) {
-				st, err := os.Stat(path)
-				if err != nil {
-					return nil, nil, err
-				}
-				i++
-				if st.IsDir() {
-					fmtPrintf("\r[%s] [%02d%%] [%10s] %s", _t(), (i * 100 / count), "   Fdir   ", _p(path))
-					return nil, st, nil
-				}
-				file, err := os.Open(path)
-				if err != nil {
-					return nil, nil, err
-				}
-				fmtPrintf("\r[%s] [%02d%%] [%10s] %s", _t(), (i * 100 / count), humansize(st.Size()), _p(path))
-				return file, st, nil
-			},
-		})
-		if err != nil {
-			fmtPrintferr("\nError: %v\n", err)
-			os.Exit(1)
-		}
-
-		st, _ := os.Stat(arpath)
-		size := st.Size()
-		fmtPrintln("\nFinished in", time.Now().Sub(start).Nanoseconds()/1e6, "ms, size:", size, "bytes /", humansize(size))
+		ArchiveDir(path, arpath)
 	} else {
-		a, err := OpenArchive(path, false)
-		if err != nil {
-			fmtPrintferr("Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmtPrintln("Extract:", path, ", Size:", humansize(a.Info.Size()))
-		fmtPrintln("Output :", flags.xdest)
-
-		i, count := 0, a.TotalEntries()
-		Extract(flags.xdest)
-
-		fmtPrintln("\nFinished in", time.Now().Sub(start).Nanoseconds()/1e6, "ms")
-	}
-}
-
-func doList(path string) {
-	a, err := OpenArchive(path, false)
-	if err != nil {
-		fmtPrintferr("Error: %v\n", err)
-		os.Exit(1)
-	}
-
-	const tf = "2006-01-02 15:04:05"
-	if flags.checksum {
-		fmtPrintf("Mode       Modtime                 Offset       Size  H\n\n")
-	} else {
-		fmtPrintf("Mode       Modtime                 Offset       Size\n\n")
-	}
-
-	var badFiles = 0
-	a.Iterate(func(info *EntryInfo, start, l uint64) error {
-		if flags.checksum {
-			flag := " · "
-			if !info.IsDir {
-				_, err := a.Stream(ioutil.Discard, info.Path)
-				if err == ErrCorruptedHash {
-					badFiles++
-					flag = " X "
-				}
-			}
-			fmtPrintf("%s%s %s %10x %10d %s %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, flag, info.Path)
-		} else {
-			fmtPrintf("%s%s %s %10x %10d %s\n", info.Dirstring(), uint16mod(uint16(info.Mode)), info.Modtime.Format(tf), start, l, info.Path)
-		}
-		return nil
-	})
-
-	fmtPrintln("\nTotal entries:", a.TotalEntries(), ", created at:", a.Created.Format(tf))
-	if badFiles > 0 {
-		fmtPrintferr("Found %d corrupted files!\n", badFiles)
+		Extract(path, flags.xdest)
 	}
 }
 
@@ -179,11 +66,11 @@ func main() {
 		}
 	case 'l':
 		for _, path := range flags.paths {
-			doList(path)
+			Extract(path, "")
 		}
 	case 'x':
 		for _, path := range flags.paths {
-			doArchive(path, true)
+			Extract(path, flags.xdest)
 		}
 	case 'w':
 		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"crypto/sha256"
+	"fmt"
 	"hash"
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 type hashreader struct {
@@ -38,7 +40,7 @@ func hashcopy(dst io.Writer, src io.Reader) (int64, []byte, error) {
 	return n, s.Sum(), err
 }
 
-func iteratePaths(paths []string, pathslist *os.File, callback func(i int, path string) error) error {
+func iteratePaths(paths []string, pathslist *os.File, callback func(i int, path string)) {
 	if pathslist != nil {
 		pathslist.Seek(0, 0)
 		i, r := 0, bufio.NewReader(pathslist)
@@ -47,22 +49,47 @@ func iteratePaths(paths []string, pathslist *os.File, callback func(i int, path 
 			path = strings.Replace(path, "\n", "", 1)
 			if err != nil {
 				if path != "" {
-					if err := callback(i, path); err != nil {
-						return err
-					}
+					callback(i, path)
 				}
-				return nil
+				return
 			}
-			if err := callback(i, path); err != nil {
-				return err
-			}
+			callback(i, path)
 			i++
 		}
 	}
 	for i, path := range paths {
-		if err := callback(i, path); err != nil {
-			return err
-		}
+		callback(i, path)
 	}
-	return nil
+}
+
+type oneliner struct {
+	start time.Time
+	lastp string
+}
+
+func newoneliner() oneliner {
+	return oneliner{start: time.Now()}
+}
+
+func (o *oneliner) fill(p string) string {
+	if len(p) > 80 {
+		p = p[:37] + "..." + p[len(p)-40:]
+
+	}
+
+	if o.lastp == "" || len(p) >= len(o.lastp) {
+		o.lastp = p
+		return p
+	}
+	n := len(o.lastp) - len(p)
+	o.lastp = p
+	return p + strings.Repeat(" ", n)
+}
+
+func (o *oneliner) elapsed() string {
+	secs := int64(time.Now().Sub(o.start).Seconds())
+	hrs := secs / 3600
+	mins := (secs - hrs*3600) / 60
+	secs = secs - hrs*3600 - mins*60
+	return fmt.Sprintf("%02d:%02d:%02d", hrs, mins, secs)
 }

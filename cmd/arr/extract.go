@@ -4,145 +4,104 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
-	"unsafe"
+	"time"
 )
-
-// func makeDirForFile(filename string) {
-// 	dir := filepath.Dir(filename)
-// 	os.MkdirAll(dir, )
-// }
 
 // Extract extracts the archive to the given path
 // if the path doesn't exist, it will be created first
-func Extract(arpath, destpath string) (int, error) {
+func Extract(arpath, destpath string) {
+	const tf = "2006-01-02 15:04:05"
+	var badFiles = 0
 
-	// dirsSort := make([]*EntryInfo, 0, len(a.pathhash)/2)
-	// for _, fi := range a.pathhash {
-	// 	if !fi.IsDir {
-	// 		continue
-	// 	}
-	// 	dirsSort = append(dirsSort, fi)
-	// 	fi.score = 0
-	// 	for _, ch := range fi.Path {
-	// 		if ch == '/' {
-	// 			fi.score++
-	// 		}
-	// 	}
-	// }
+	a, err := OpenArchive(arpath, true)
+	fmtFatalErr(err)
+	defer a.Close()
 
-	// sort.Slice(dirsSort, func(i, j int) bool { return dirsSort[i].score < dirsSort[j].score })
-
-	// for _, dir := range dirsSort {
-	// 	if options.OnBeforeExtractingEntry != nil {
-	// 		options.OnBeforeExtractingEntry(dir)
-	// 	}
-	// 	p := filepath.Join(path, dir.Path)
-	// 	if err := os.MkdirAll(p, os.FileMode(dir.Mode)); err != nil {
-	// 		return 0, err
-	// 	}
-	// }
-
-	// for _, fi := range a.pathhash {
-	// 	if fi.IsDir {
-	// 		continue
-	// 	}
-	// 	if options.OnBeforeExtractingEntry != nil {
-	// 		options.OnBeforeExtractingEntry(fi)
-	// 	}
-	// 	p := filepath.Join(path, fi.Path)
-	// 	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE, os.FileMode(fi.Mode))
-	// 	if err != nil {
-	// 		return 0, err
-	// 	}
-	// 	if _, err := a.Stream(f, fi.Path); err != nil {
-	// 		return 0, err
-	// 	}
-	// 	f.Close()
-	// }
-
-	// return 0, nil
-	ar, err := os.Open(arpath)
-	if err != nil {
-		return 0, err
-	}
-	defer ar.Close()
-
-	st, err := ar.Stat()
-	if err != nil {
-		return 0, err
-	}
-
-	fmtPrintln("Extract:", arpath, ", Size:", humansize(st.Size()))
-	fmtPrintln("Output :", destpath)
-
-	cursor := &uint64map{}
-
-	p := [metasize]byte{}
-	if _, err := ar.Read(p[:]); err != nil {
-		return 0, err
-	}
-	if string(p[:4]) != "zzz0" {
-		return 0, fmt.Errorf("invalid header")
-	}
-
-	count := binary.BigEndian.Uint32(p[4:8])
-	// x.Created = time.Unix(int64(binary.BigEndian.Uint32(p[8:12])), 0)
-	if p[12] != *(*byte)(unsafe.Pointer(&one)) {
-		return 0, fmt.Errorf("unmatched endianness")
-	}
-
-	cursor.data = make([][3]uint64, count)
-	if _, err := ar.Read(cursor.bytes()); err != nil {
-		return 0, err
+	fmtPrintln("Source:", arpath, ", size:", humansize(a.Info.Size()))
+	if flags.action == 'l' { 
+		if flags.checksum {
+			fmtPrintf("\nMode       Modtime                 Offset       Size  H\n\n")
+		} else {
+			fmtPrintf("\nMode       Modtime                 Offset       Size\n\n")
+		}
+	} else {
+		fmtPrintln("Output :", destpath)
 	}
 
 	pathbuf := make([]byte, 256)
+	count := uint32(len(a.cursor.data))
+
+	p := [metasize]byte{}
 	for i := uint32(0); i < count; i++ {
-		if _, err := ar.Read(p[:2]); err != nil {
-			return 0, err
-		}
+		_, err = a.fd.Read(p[:2])
+		fmtFatalErr(err)
 
 		pathlen := int(binary.BigEndian.Uint16(p[:2]))
 		if pathlen > len(pathbuf) {
 			pathbuf = make([]byte, pathlen)
 		}
 
-		if _, err := ar.Read(pathbuf[:4]); err != nil {
-			return 0, err
-		}
+		_, err = a.fd.Read(pathbuf[:4])
+		fmtFatalErr(err)
 		mode := os.FileMode(binary.BigEndian.Uint32(pathbuf))
 
-		if _, err := ar.Read(pathbuf[:4]); err != nil {
-			return 0, err
-		}
+		_, err = a.fd.Read(pathbuf[:4])
+		modtime := time.Unix(int64(binary.BigEndian.Uint32(pathbuf)), 0)
+		fmtFatalErr(err)
 
-		if _, err := ar.Read(pathbuf[:sha256.Size]); err != nil {
-			return 0, err
-		}
+		_, err = a.fd.Read(pathbuf[:sha256.Size])
+		fmtFatalErr(err)
 
 		hash := [sha256.Size]byte{}
 		copy(hash[:], pathbuf[:sha256.Size])
 		isDir := bytes.Equal(pathbuf[:sha256.Size], []byte(dirguid))
 
-		if _, err := ar.Read(pathbuf[:pathlen]); err != nil {
-			return 0, err
-		}
+		_, err = a.fd.Read(pathbuf[:pathlen])
+		fmtFatalErr(err)
 
 		path := string(pathbuf[:pathlen])
 		finalpath := filepath.Join(destpath, path)
 
+		// list the content and continue reading
+		if flags.action == 'l' {
+			start, length, _ := a.cursor.get(path)
+			flag, dirstr := " · ", "-"
+			if isDir {
+				dirstr = "d"
+				start, length = 0, 0
+			}
+
+			if flags.checksum {
+				if !isDir {
+					old, err := a.fd.Seek(0, 1)
+					fmtFatalErr(err)
+					if _, err = a.Stream(ioutil.Discard, path); err == ErrCorruptedHash {
+						badFiles++
+						flag = " X "  
+					}
+					_, err = a.fd.Seek(old,0)
+					fmtFatalErr(err)
+				}
+
+				fmtPrintf("%s%s %s %10x %10d %s %s\n", dirstr, uint16mod(uint16(mode)), modtime.Format(tf), start, length, flag, path)
+			} else {
+				fmtPrintf("%s%s %s %10x %10d %s\n", dirstr, uint16mod(uint16(mode)), modtime.Format(tf), start, length, path)
+			}
+			continue
+		}
+
 		if isDir {
 			if _, err := os.Stat(finalpath); err == nil {
 				if err := os.Chmod(finalpath, mode); err != nil {
-					return 0, err
+					fmtMaybeErr(err)
 				}
 			} else {
 				if err := os.MkdirAll(finalpath, mode); err != nil {
-					return 0, err
+					fmtMaybeErr(err)
 				}
 			}
 			continue
@@ -150,32 +109,51 @@ func Extract(arpath, destpath string) (int, error) {
 
 		w, err := os.OpenFile(finalpath, os.O_CREATE|os.O_WRONLY, mode)
 		if err != nil {
-			return 0, err
+			fmtMaybeErr(err)
+			continue
 		}
 
-		old, _ := ar.Seek(0, 1)
-		start, length, _ := cursor.get(path)
-		if _, err := ar.Seek(int64(start), 0); err != nil {
-			w.Close()
-			return 0, err
+		old, err := a.fd.Seek(0, 1)
+		fmtFatalErr(err)
+
+		start, length, _ := a.cursor.get(path)
+		_, err = a.fd.Seek(int64(start), 0)
+		fmtFatalErr(err)
+
+		var wr int64
+		var h []byte
+
+		if flags.checksum {
+			wr, h, err = hashcopyN(w, a.fd, int64(length))
+			if !bytes.Equal(h, hash[:]) {
+				w.Close()
+				fmtMaybeErr(ErrCorruptedHash)
+				continue
+			}
+		} else {
+			wr, err = io.CopyN(w, a.fd, int64(length))
 		}
 
-		wr, h, err := hashcopyN(w, ar, int64(length))
-		if !bytes.Equal(h, hash[:]) {
-			w.Close()
-			return 0, ErrCorruptedHash
-		}
 		if err != nil {
 			w.Close()
-			return 0, err
+			fmtMaybeErr(err)
+			continue
 		}
 		if wr != int64(length) {
 			w.Close()
-			return 0, io.ErrShortWrite
+			fmtMaybeErr(io.ErrShortWrite)
+			continue
 		}
+
 		w.Close()
-		ar.Seek(old, 0)
+		_, err = a.fd.Seek(old, 0)
+		fmtFatalErr(err)
 	}
 
-	return int(count), nil
+	if flags.action == 'l' {
+		fmtPrintln("\nTotal entries:", a.TotalEntries(), ", created at:", a.Created.Format(tf))
+		if badFiles > 0 {
+			fmtPrintferr("Found %d corrupted files!\n", badFiles)
+		}
+	}
 }
