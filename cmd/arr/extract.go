@@ -16,20 +16,21 @@ import (
 func Extract(arpath, destpath string) {
 	const tf = "2006-01-02 15:04:05"
 	var badFiles = 0
+	var o = newoneliner()
 
 	a, err := OpenArchive(arpath, true)
 	fmtFatalErr(err)
 	defer a.Close()
 
-	fmtPrintln("Source:", arpath, ", size:", humansize(a.Info.Size()))
-	if flags.action == 'l' { 
+	fmtPrintln("Source:", arpath, ", size:", humansize(a.Info.Size()), ",", len(a.cursor.data), "files")
+	if flags.action == 'l' {
 		if flags.checksum {
 			fmtPrintf("\nMode       Modtime                 Offset       Size  H\n\n")
 		} else {
 			fmtPrintf("\nMode       Modtime                 Offset       Size\n\n")
 		}
 	} else {
-		fmtPrintln("Output :", destpath)
+		fmtPrintln("Output:", destpath)
 	}
 
 	pathbuf := make([]byte, 256)
@@ -81,9 +82,9 @@ func Extract(arpath, destpath string) {
 					fmtFatalErr(err)
 					if _, err = a.Stream(ioutil.Discard, path); err == ErrCorruptedHash {
 						badFiles++
-						flag = " X "  
+						flag = " X "
 					}
-					_, err = a.fd.Seek(old,0)
+					_, err = a.fd.Seek(old, 0)
 					fmtFatalErr(err)
 				}
 
@@ -94,14 +95,19 @@ func Extract(arpath, destpath string) {
 			continue
 		}
 
+		fmtPrintf("\r[%s] [%02d%%] ", o.elapsed(), (i * 100 / count))
+
+		// do the extraction
 		if isDir {
+			fmtPrintf("[   Fdir   ] %s", o.fill(path))
+
 			if _, err := os.Stat(finalpath); err == nil {
 				if err := os.Chmod(finalpath, mode); err != nil {
-					fmtMaybeErr(err)
+					fmtMaybeErr(finalpath, err)
 				}
 			} else {
 				if err := os.MkdirAll(finalpath, mode); err != nil {
-					fmtMaybeErr(err)
+					fmtMaybeErr(finalpath, err)
 				}
 			}
 			continue
@@ -109,7 +115,7 @@ func Extract(arpath, destpath string) {
 
 		w, err := os.OpenFile(finalpath, os.O_CREATE|os.O_WRONLY, mode)
 		if err != nil {
-			fmtMaybeErr(err)
+			fmtMaybeErr(finalpath, err)
 			continue
 		}
 
@@ -117,6 +123,8 @@ func Extract(arpath, destpath string) {
 		fmtFatalErr(err)
 
 		start, length, _ := a.cursor.get(path)
+		fmtPrintf("[%10s] %s", humansize(int64(length)), o.fill(path))
+
 		_, err = a.fd.Seek(int64(start), 0)
 		fmtFatalErr(err)
 
@@ -127,7 +135,8 @@ func Extract(arpath, destpath string) {
 			wr, h, err = hashcopyN(w, a.fd, int64(length))
 			if !bytes.Equal(h, hash[:]) {
 				w.Close()
-				fmtMaybeErr(ErrCorruptedHash)
+				fmtMaybeErr(finalpath, ErrCorruptedHash)
+				badFiles++
 				continue
 			}
 		} else {
@@ -136,12 +145,12 @@ func Extract(arpath, destpath string) {
 
 		if err != nil {
 			w.Close()
-			fmtMaybeErr(err)
+			fmtMaybeErr(finalpath, err)
 			continue
 		}
 		if wr != int64(length) {
 			w.Close()
-			fmtMaybeErr(io.ErrShortWrite)
+			fmtMaybeErr(finalpath, io.ErrShortWrite)
 			continue
 		}
 
@@ -152,8 +161,11 @@ func Extract(arpath, destpath string) {
 
 	if flags.action == 'l' {
 		fmtPrintln("\nTotal entries:", a.TotalEntries(), ", created at:", a.Created.Format(tf))
-		if badFiles > 0 {
-			fmtPrintferr("Found %d corrupted files!\n", badFiles)
-		}
+	} else {
+		fmtPrintln("\nFinished in", o.elapsed())
+	}
+
+	if badFiles > 0 {
+		fmtPrintferr("Found %d corrupted files\n", badFiles)
 	}
 }

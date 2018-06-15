@@ -7,6 +7,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -60,6 +61,28 @@ func iteratePaths(paths []string, pathslist *os.File, callback func(i int, path 
 	for i, path := range paths {
 		callback(i, path)
 	}
+}
+
+func rel(basepath, path string) string {
+	p, err := filepath.Rel(basepath, path)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+func isUnder(dir, path string) bool {
+	if dir == "." || dir == "" {
+		p := strings.Split(path, "/")
+		return len(p) == 1
+	}
+
+	dir += "/"
+	if !strings.HasPrefix(path, dir) {
+		return false
+	}
+	p := strings.Split(path[len(dir):], "/")
+	return len(p) == 1
 }
 
 type oneliner struct {

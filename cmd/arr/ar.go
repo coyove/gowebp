@@ -294,7 +294,7 @@ func ArchiveDir(dirpath, arpath string) {
 		}
 		totalFoundEntries++
 
-		path, _ = filepath.Rel(dirpath, path)
+		path = rel(dirpath, path)
 		fmtPrintf("\r[%s] Search base: %s", o.elapsed(), o.fill(path))
 
 		pathbuflen += len(path) + fileHdr
@@ -310,7 +310,7 @@ func ArchiveDir(dirpath, arpath string) {
 
 	defer ar.Close()
 
-	p, count := [metasize]byte{'z', 'z', 'z', '0'}, len(full)
+	p, count := [metasize]byte{'z', 'z', 'z', '0'}, totalFoundEntries
 
 	binary.BigEndian.PutUint32(p[4:8], uint32(count))
 	binary.BigEndian.PutUint32(p[8:12], uint32(time.Now().Unix()))
@@ -335,27 +335,28 @@ func ArchiveDir(dirpath, arpath string) {
 
 		st, err = os.Stat(path)
 		if err != nil {
-			fmtMaybeErr(err)
+			fmtMaybeErr(path, err)
 			return
 		}
 		if !st.IsDir() {
 			file, err = os.Open(path)
 		}
 		if err != nil {
-			fmtMaybeErr(err)
+			fmtMaybeErr(path, err)
 			return
 		}
 
+		finalpath := rel(dirpath, path)
+		finalpath = strings.Replace(finalpath, "\\", "/", -1)
+		fmtPrintf("\r[%s] [%02d%%] ", o.elapsed(), (i * 100 / totalFoundEntries))
+
 		if st.IsDir() {
-			fmtPrintf("\r[%s] [%02d%%] [   Fdir   ] %s", o.elapsed(), (i * 100 / totalFoundEntries), o.fill(path))
+			fmtPrintf("[   Fdir   ] %s", o.fill(finalpath))
 		} else {
-			fmtPrintf("\r[%s] [%02d%%] [%10s] %s", o.elapsed(), (i * 100 / totalFoundEntries), humansize(st.Size()), o.fill(path))
+			fmtPrintf("[%10s] %s", humansize(st.Size()), o.fill(finalpath))
 		}
 
-		path, _ = filepath.Rel(dirpath, path)
-		path = strings.Replace(path, "\\", "/", -1)
-
-		binary.BigEndian.PutUint16(p[:2], uint16(len(path)))
+		binary.BigEndian.PutUint16(p[:2], uint16(len(finalpath)))
 		binary.BigEndian.PutUint32(p[2:6], uint32(st.Mode()))
 		binary.BigEndian.PutUint32(p[6:10], uint32(st.ModTime().Unix()))
 
@@ -371,18 +372,18 @@ func ArchiveDir(dirpath, arpath string) {
 			fmtFatalErr(err)
 			pcursor += sha256.Size
 
-			_, err = ar.WriteAt([]byte(path), pcursor)
+			_, err = ar.WriteAt([]byte(finalpath), pcursor)
 			fmtFatalErr(err)
 
-			pcursor += int64(len(path))
-			m.push(path, DirFlag, DirFlag)
+			pcursor += int64(len(finalpath))
+			m.push(finalpath, DirFlag, DirFlag)
 			return
 		}
 
 		// append the file content to the end of the archive
 		n, h, err := hashcopy(ar, file)
 		if err != nil {
-			fmtMaybeErr(err)
+			fmtMaybeErr(path, err)
 			return
 		}
 
@@ -391,15 +392,15 @@ func ArchiveDir(dirpath, arpath string) {
 		fmtFatalErr(err)
 
 		pcursor += sha256.Size
-		_, err = ar.WriteAt([]byte(path), pcursor)
+		_, err = ar.WriteAt([]byte(finalpath), pcursor)
 		fmtFatalErr(err)
 
-		pcursor += int64(len(path))
-		m.push(path, uint64(cursor), uint64(n))
+		pcursor += int64(len(finalpath))
+		m.push(finalpath, uint64(cursor), uint64(n))
 
 		cursor += n
 		if err := file.Close(); err != nil {
-			fmtMaybeErr(err)
+			fmtMaybeErr(path, err)
 			return
 		}
 
@@ -424,7 +425,7 @@ func ArchiveDir(dirpath, arpath string) {
 
 	st, _ := os.Stat(arpath)
 	size := st.Size()
-	fmtPrintln("\nFinished in", o.elapsed(), "ms, size:", size, "bytes /", humansize(size))
+	fmtPrintln("\nFinished in", o.elapsed(), ", size:", size, "bytes /", humansize(size))
 }
 
 type uint64map struct {

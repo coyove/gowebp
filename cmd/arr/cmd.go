@@ -146,7 +146,7 @@ func fmtFatalErr(arg error) {
 }
 
 func fmtMaybeErr(args ...interface{}) {
-	os.Stderr.WriteString("Error: " + fmt.Sprint(args...))
+	os.Stderr.WriteString("\nError: " + fmt.Sprint(args...) + "\n")
 	if flags.ignoreerrors {
 		return
 	}
