@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 func humansize(size int64) string {
@@ -73,6 +74,9 @@ func main() {
 			}
 
 			uri = uri[1:]
+			if strings.HasSuffix(uri, "/") {
+				uri = uri[:len(uri)-1]
+			}
 			if _, _, ok := a.GetFile(uri); ok {
 				a.Stream(w, uri)
 				return
@@ -83,10 +87,11 @@ func main() {
 					<title>%s</title>
 					<style>*{font-size:12px;font-family:"Lucida Console",Monaco,monospace}td,div{padding:4px}td{white-space:nowrap;width:1px}</style>
 					<style>.dir{font-weight:bold}a{text-decoration:none}a:hover{text-decoration:underline}</style>
+					<script>function up(){var p=location.href.split('/');p.pop();location.href=p.join('/')}</script>
 					<div>Total entries: %d, created at: %s</div>
 					<table border=1 style="border-collapse:collapse">
 					<tr><td> Mode </td><td> Modtime </td><td> Offset </td><td align=right> Size </td><td></td></tr>
-					<tr><td></td><td></td><td></td><td></td><td class=dir><a href="../">..</a></td></tr>
+					<tr><td></td><td></td><td></td><td></td><td class=dir><a href="javascript:up()">..</a></td></tr>
 					`, flags.paths[0], a.TotalEntries(), a.Created.Format(tf))))
 
 			a.Iterate(func(info *EntryInfo, start, l uint64) error {
