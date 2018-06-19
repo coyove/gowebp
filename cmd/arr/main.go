@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"fmt"
 	_ "image/jpeg"
 	"net"
@@ -11,32 +10,6 @@ import (
 	"runtime"
 	"strings"
 )
-
-func humansize(size int64) string {
-	var psize string
-	if size < 1024*1024 {
-		psize = fmt.Sprintf("%.2f KB", float64(size)/1024)
-	} else if size < 1024*1024*1024 {
-		psize = fmt.Sprintf("%.2f MB", float64(size)/1024/1024)
-	} else if size < 1024*1024*1024*1024 {
-		psize = fmt.Sprintf("%.2f GB", float64(size)/1024/1024/1024)
-	} else {
-		psize = fmt.Sprintf("%.2f TB", float64(size)/1024/1024/1024/1024)
-	}
-	return psize
-}
-
-func uint16mod(m uint16) string {
-	buf := &bytes.Buffer{}
-	for i := 0; i < 9; i++ {
-		if m<<uint16(7+i)>>15 == 1 {
-			buf.WriteByte("rwx"[i%3])
-		} else {
-			buf.WriteString("-")
-		}
-	}
-	return buf.String()
-}
 
 func main() {
 	parseFlags()
@@ -58,7 +31,6 @@ func main() {
 			Extract(path, flags.xdest)
 		}
 	case 'w':
-
 		const tf = "2006-01-02 15:04:05"
 		a, err := OpenArchive(flags.paths[0], false)
 		if err != nil {
@@ -107,7 +79,7 @@ func main() {
 							<td align=right>-</td>
 							<td class=dir><a href='/%s'>%s</a></td>
 						</tr>`,
-						info.Dirstring(), uint16mod(uint16(info.Mode)),
+						info.dirstring(), uint16mod(uint16(info.Mode)),
 						info.Modtime.Format(tf), info.Path, filepath.Base(info.Path),
 					)))
 				} else {
@@ -118,7 +90,7 @@ func main() {
 						<td align=right>%d</td>
 						<td><a href='/%s'>%s</a></td>
 					</tr>`,
-						info.Dirstring(), uint16mod(uint16(info.Mode)),
+						info.dirstring(), uint16mod(uint16(info.Mode)),
 						info.Modtime.Format(tf), start, l, info.Path, filepath.Base(info.Path),
 					)))
 				}
@@ -126,17 +98,46 @@ func main() {
 			})
 
 			w.Write([]byte("</table></html>"))
-			// a.Close()
-			// return
-
-			// split(w, flags.paths[0], uri[1:])
 		})
 
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			panic(err)
+		if flags.listen == "" {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				panic(err)
+			}
+			fmt.Println("Server started at", listener.Addr())
+			http.Serve(listener, nil)
+		} else {
+			fmt.Println("Server started at", flags.listen)
+			http.ListenAndServe(flags.listen, nil)
 		}
-		fmt.Println("Server started at", listener.Addr())
-		http.Serve(listener, nil)
+
+	case 'W':
+		basepath := flags.paths[0]
+		fmt.Println("Serving base:", basepath)
+
+		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			uri := r.URL.Path
+			if len(uri) < 1 {
+				w.WriteHeader(400)
+				return
+			}
+
+			uri = strings.Replace(uri[1:], "thumbs/", "", -1)
+			parts := strings.Split(uri, "/")
+
+			w.Header().Add("Access-Control-Allow-Origin", "*")
+			mergepath := filepath.Join(basepath, parts[0]+".arrpkg")
+			fullpath := filepath.Join(basepath, uri)
+
+			if _, err := os.Stat(mergepath); err == nil {
+				split(w, mergepath, strings.Join(parts[1:], "/"))
+			} else {
+				http.ServeFile(w, r, fullpath)
+			}
+		})
+
+		fmt.Println("Server started at", flags.listen)
+		http.ListenAndServe(flags.listen, nil)
 	}
 }

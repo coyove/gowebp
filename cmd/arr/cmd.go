@@ -14,6 +14,7 @@ var flags struct {
 	deloriginal  bool
 	ignoreerrors bool
 	delimm       bool
+	listen       string
 	paths        []string
 	xdest        string
 }
@@ -24,7 +25,7 @@ func panicf(format string, a ...interface{}) {
 
 func parseFlags() {
 	usage := func() {
-		fmt.Printf("Usage: arr [axlw]vXkCf\n")
+		fmt.Printf("Usage: arr [axlw]vXkCfL\n")
 	}
 
 	defer func() {
@@ -38,7 +39,7 @@ func parseFlags() {
 	args := os.Args
 	flags.paths = make([]string, 0)
 	flags.xdest, _ = filepath.Abs(".")
-	nextIsDest := false
+	nextIs := '\x00'
 
 	for i := 1; i < len(args); i++ {
 		arg := args[i]
@@ -50,8 +51,8 @@ func parseFlags() {
 				arg = arg[:len(arg)-1]
 			}
 
-			if nextIsDest {
-				nextIsDest = false
+			if nextIs == 'd' {
+				nextIs = 0
 				flags.xdest = arg
 			} else {
 				flags.paths = append(flags.paths, arg)
@@ -59,9 +60,14 @@ func parseFlags() {
 			continue
 		}
 
-		if nextIsDest {
-			nextIsDest = false
+		switch nextIs {
+		case 'd':
+			nextIs = 0
 			flags.xdest = arg
+			continue
+		case 'l':
+			nextIs = 0
+			flags.listen = arg
 			continue
 		}
 
@@ -76,7 +82,7 @@ func parseFlags() {
 
 		for _, p := range arg {
 			switch p {
-			case 'a', 'x', 'l', 'w':
+			case 'a', 'x', 'l', 'w', 'W':
 				if flags.action != 0 {
 					panicf("conflict arguments: %s and %s", string(p), string(flags.action))
 				}
@@ -84,7 +90,9 @@ func parseFlags() {
 			case 'v':
 				flags.verbose = true
 			case 'C':
-				nextIsDest = true
+				nextIs = 'd'
+			case 'L':
+				nextIs = 'l'
 			case 'X':
 				if flags.deloriginal {
 					flags.delimm = true

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"fmt"
 	"hash"
@@ -47,7 +48,7 @@ func iteratePaths(paths []string, pathslist *os.File, callback func(i int, path 
 		i, r := 0, bufio.NewReader(pathslist)
 		for {
 			path, err := r.ReadString('\n')
-			path = strings.Replace(path, "\n", "", 1)
+			path = strings.TrimSuffix(path, "\n")
 			if err != nil {
 				if path != "" {
 					callback(i, path)
@@ -58,8 +59,10 @@ func iteratePaths(paths []string, pathslist *os.File, callback func(i int, path 
 			i++
 		}
 	}
+
 	for i, path := range paths {
 		callback(i, path)
+		paths[i] = "*"
 	}
 }
 
@@ -83,6 +86,32 @@ func isUnder(dir, path string) bool {
 	}
 	p := strings.Split(path[len(dir):], "/")
 	return len(p) == 1
+}
+
+func humansize(size int64) string {
+	var psize string
+	if size < 1024*1024 {
+		psize = fmt.Sprintf("%.2f KB", float64(size)/1024)
+	} else if size < 1024*1024*1024 {
+		psize = fmt.Sprintf("%.2f MB", float64(size)/1024/1024)
+	} else if size < 1024*1024*1024*1024 {
+		psize = fmt.Sprintf("%.2f GB", float64(size)/1024/1024/1024)
+	} else {
+		psize = fmt.Sprintf("%.2f TB", float64(size)/1024/1024/1024/1024)
+	}
+	return psize
+}
+
+func uint16mod(m uint16) string {
+	buf := &bytes.Buffer{}
+	for i := 0; i < 9; i++ {
+		if m<<uint16(7+i)>>15 == 1 {
+			buf.WriteByte("rwx"[i%3])
+		} else {
+			buf.WriteString("-")
+		}
+	}
+	return buf.String()
 }
 
 type oneliner struct {

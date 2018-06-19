@@ -30,8 +30,8 @@ const (
 	dirguid  = "\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4"
 	dummy16  = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 	metasize = 24
-
-	DirFlag = 0xfedcba9876543210
+	dirflag  = 0xfedcba9876543210
+	errflag  = 0xfedcbacccccccccc
 )
 
 type EntryInfo struct {
@@ -43,7 +43,7 @@ type EntryInfo struct {
 	score   byte
 }
 
-func (e *EntryInfo) Dirstring() string {
+func (e *EntryInfo) dirstring() string {
 	dir := "d"
 	if !e.IsDir {
 		dir = "-"
@@ -118,6 +118,9 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 		if pathlen > len(pathbuf) {
 			pathbuf = make([]byte, pathlen)
 		}
+		if pathlen == 0 {
+			continue
+		}
 
 		if _, err := ar.Read(pathbuf[:4]); err != nil {
 			return nil, err
@@ -166,7 +169,10 @@ func (a *Archive) Close() error {
 
 func (a *Archive) GetFile(path string) (startPos uint64, size uint64, ok bool) {
 	startPos, size, ok = a.cursor.get(path)
-	if startPos == DirFlag && size == DirFlag {
+	if startPos == dirflag && size == dirflag {
+		ok = false
+	}
+	if startPos == errflag && size == errflag {
 		ok = false
 	}
 	return
@@ -183,6 +189,10 @@ func (a *Archive) Stream(w io.Writer, path string) (int64, error) {
 	if !ok {
 		return 0, fmt.Errorf("can't stream %s", path)
 	}
+	if start == errflag {
+		return 0, fmt.Errorf("%s is a bad file", path)
+	}
+
 	if _, err := a.fd.Seek(int64(start), 0); err != nil {
 		return 0, err
 	}
@@ -329,6 +339,9 @@ func ArchiveDir(dirpath, arpath string) {
 	cursor, pcursor := int64(headerlen+metasize), int64(count)*metasize+metasize
 	m := uint64map{}
 	iteratePaths(full, pathslist, func(i int, path string) {
+		finalpath := rel(dirpath, path)
+		finalpath = strings.Replace(finalpath, "\\", "/", -1)
+
 		var file *os.File
 		var st os.FileInfo
 		var err error
@@ -336,6 +349,9 @@ func ArchiveDir(dirpath, arpath string) {
 		st, err = os.Stat(path)
 		if err != nil {
 			fmtMaybeErr(path, err)
+			// if users chose to ignore errors, we will still insert the entry into jmptable
+			// but with errflag.
+			m.push(finalpath, errflag, errflag)
 			return
 		}
 		if !st.IsDir() {
@@ -343,11 +359,10 @@ func ArchiveDir(dirpath, arpath string) {
 		}
 		if err != nil {
 			fmtMaybeErr(path, err)
+			m.push(finalpath, errflag, errflag)
 			return
 		}
 
-		finalpath := rel(dirpath, path)
-		finalpath = strings.Replace(finalpath, "\\", "/", -1)
 		fmtPrintf("\r[%s] [%02d%%] ", o.elapsed(), (i * 100 / totalFoundEntries))
 
 		if st.IsDir() {
@@ -366,8 +381,7 @@ func ArchiveDir(dirpath, arpath string) {
 
 		if st.IsDir() {
 			// for directories, they have no real contents
-			// so we will use dirFlag as hash to identify
-
+			// so we will use dirflag as hash to identify
 			_, err = ar.WriteAt([]byte(dirguid), pcursor)
 			fmtFatalErr(err)
 			pcursor += sha256.Size
@@ -376,14 +390,21 @@ func ArchiveDir(dirpath, arpath string) {
 			fmtFatalErr(err)
 
 			pcursor += int64(len(finalpath))
-			m.push(finalpath, DirFlag, DirFlag)
+			m.push(finalpath, dirflag, dirflag)
 			return
 		}
 
 		// append the file content to the end of the archive
+		beforeAppend, err := ar.Seek(0, 1)
+		fmtFatalErr(err)
+
 		n, h, err := hashcopy(ar, file)
 		if err != nil {
 			fmtMaybeErr(path, err)
+			m.push(finalpath, errflag, errflag)
+			pcursor -= 10
+			_, err = ar.Seek(beforeAppend, 0)
+			fmtFatalErr(err)
 			return
 		}
 
