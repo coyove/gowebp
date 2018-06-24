@@ -6,6 +6,7 @@ import (
 	"image/png"
 	"log"
 	"net/http"
+	"time"
 
 	"sync"
 
@@ -71,6 +72,7 @@ func (d *fileref) open(path string) (*Archive, error) {
 var cofileref = &fileref{}
 
 func split(w http.ResponseWriter, path, name string) {
+	start := time.Now()
 	a, err := cofileref.open(path)
 	if err != nil {
 		errImage(w, err.Error())
@@ -89,5 +91,9 @@ func split(w http.ResponseWriter, path, name string) {
 		}
 	} else {
 		errImage(w, "invalid image index")
+	}
+	diff := time.Now().Sub(start).Nanoseconds() / 1e6
+	if diff > 100 {
+		log.Println(path, name, diff, "ms")
 	}
 }
