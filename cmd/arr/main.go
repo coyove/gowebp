@@ -123,6 +123,7 @@ func main() {
 				return
 			}
 
+			jpg := r.FormValue("jpg") == "1"
 			uri = strings.Replace(uri[1:], "thumbs/", "", -1)
 			parts := strings.Split(uri, "/")
 
@@ -131,7 +132,7 @@ func main() {
 			fullpath := filepath.Join(basepath, uri)
 
 			if _, err := os.Stat(mergepath); err == nil {
-				split(w, mergepath, strings.Join(parts[1:], "/"))
+				split(w, mergepath, strings.Join(parts[1:], "/"), jpg)
 			} else {
 				http.ServeFile(w, r, fullpath)
 			}
