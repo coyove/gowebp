@@ -25,7 +25,7 @@ func panicf(format string, a ...interface{}) {
 
 func parseFlags() {
 	usage := func() {
-		fmt.Printf("Usage: arr [axlw]vXkCfL\n")
+		fmt.Printf("Usage: arr [axlwj]vXkCfL\n")
 	}
 
 	defer func() {
@@ -82,7 +82,7 @@ func parseFlags() {
 
 		for _, p := range arg {
 			switch p {
-			case 'a', 'x', 'l', 'w', 'W':
+			case 'a', 'x', 'l', 'w', 'W', 'j':
 				if flags.action != 0 {
 					panicf("conflict arguments: %s and %s", string(p), string(flags.action))
 				}

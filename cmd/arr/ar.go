@@ -63,6 +63,50 @@ type Archive struct {
 	Created time.Time
 }
 
+// DumpArchiveJmupTable dumps the header
+func DumpArchiveJmupTable(path, dumppath string) error {
+	ar, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer ar.Close()
+
+	df, err := os.Create(dumppath)
+	if err != nil {
+		return err
+	}
+	defer df.Close()
+
+	cursor := &uint64map{}
+	p := [metasize]byte{}
+	if _, err := ar.Read(p[:]); err != nil {
+		return err
+	}
+	if string(p[:4]) != "zzz0" {
+		return fmt.Errorf("invalid header")
+	}
+
+	count := binary.BigEndian.Uint32(p[4:8])
+	if p[12] != *(*byte)(unsafe.Pointer(&one)) {
+		return fmt.Errorf("unmatched endianness")
+	}
+
+	cursor.data = make([][3]uint64, count)
+	if _, err := ar.Read(cursor.bytes()); err != nil {
+		return err
+	}
+
+	if _, err := df.Write(p[:]); err != nil {
+		return err
+	}
+
+	if _, err := df.Write(cursor.bytes()); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // OpenArchive opens an archive with the given path
 func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 	ar, err := os.Open(path)

@@ -30,6 +30,10 @@ func main() {
 		for _, path := range flags.paths {
 			Extract(path, flags.xdest)
 		}
+	case 'j':
+		for _, path := range flags.paths {
+			DumpArchiveJmupTable(path, path+".jmp")
+		}
 	case 'w':
 		const tf = "2006-01-02 15:04:05"
 		a, err := OpenArchive(flags.paths[0], false)
