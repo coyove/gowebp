@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"image"
 	"image/draw"
-	"image/jpeg"
 	"image/png"
 	"log"
 	"net/http"
@@ -13,7 +11,7 @@ import (
 	"sync"
 
 	"github.com/coyove/common/dejavu"
-	"github.com/coyove/gowebp"
+	"github.com/coyove/gowebp/arp"
 )
 
 func errImage(w http.ResponseWriter, message string) {
@@ -43,21 +41,21 @@ func errImage(w http.ResponseWriter, message string) {
 
 type fileref struct {
 	sync.Mutex
-	m map[string]*Archive
+	m map[string]*arp.Archive
 }
 
-func (d *fileref) open(path string) (*Archive, error) {
+func (d *fileref) open(path string) (*arp.Archive, error) {
 	d.Lock()
 	defer d.Unlock()
 
 	if d.m == nil {
-		d.m = make(map[string]*Archive)
+		d.m = make(map[string]*arp.Archive)
 	}
 
 	x := d.m[path]
 	// AGAIN:
 	if x == nil {
-		a, err := OpenArchive(path, false)
+		a, err := arp.OpenArchive(path, false)
 		if err != nil {
 			return nil, err
 		}
@@ -74,7 +72,7 @@ func (d *fileref) open(path string) (*Archive, error) {
 
 var cofileref = &fileref{}
 
-func split(w http.ResponseWriter, path, name string, jpg bool) {
+func split(w http.ResponseWriter, path, name string) {
 	start := time.Now()
 	a, err := cofileref.open(path)
 	if err != nil {
@@ -85,26 +83,12 @@ func split(w http.ResponseWriter, path, name string, jpg bool) {
 
 	log.Println("serve", path, name)
 	if a.Contains(name) {
-		if jpg {
-			p := &bytes.Buffer{}
-			if _, err := a.Stream(p, name); err != nil {
-				if err == ErrCorruptedHash {
-					log.Println("corrupted content:", name)
-				} else {
-					w.Header().Del("Content-Type")
-					errImage(w, err.Error())
-				}
-			}
-
-			gowebp.DecodeToJPEG(w, p.Bytes(), &jpeg.Options{Quality: 80})
-		} else {
-			if _, err := a.Stream(w, name); err != nil {
-				if err == ErrCorruptedHash {
-					log.Println("corrupted content:", name)
-				} else {
-					w.Header().Del("Content-Type")
-					errImage(w, err.Error())
-				}
+		if _, err := a.Stream(w, name); err != nil {
+			if err == arp.ErrCorruptedHash {
+				log.Println("corrupted content:", name)
+			} else {
+				w.Header().Del("Content-Type")
+				errImage(w, err.Error())
 			}
 		}
 	} else {

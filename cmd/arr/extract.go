@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/coyove/gowebp/arp"
 )
 
 // Extract extracts the archive to the given path
@@ -18,11 +20,11 @@ func Extract(arpath, destpath string) {
 	var badFiles = 0
 	var o = newoneliner()
 
-	a, err := OpenArchive(arpath, true)
+	a, err := arp.OpenArchive(arpath, true)
 	fmtFatalErr(err)
 	defer a.Close()
 
-	fmtPrintln("Source:", arpath, ", size:", humansize(a.Info.Size()), ",", len(a.cursor.data), "files")
+	fmtPrintln("Source:", arpath, ", size:", humansize(a.Info.Size()), ",", len(a.Cursor.Data), "files")
 	if flags.action == 'l' {
 		if flags.checksum {
 			fmtPrintf("\nMode       Modtime                 Offset       Size  H\n\n")
@@ -34,11 +36,11 @@ func Extract(arpath, destpath string) {
 	}
 
 	pathbuf := make([]byte, 256)
-	count := uint32(len(a.cursor.data))
+	count := uint32(len(a.Cursor.Data))
 
-	p := [metasize]byte{}
+	p := [arp.MetaSize]byte{}
 	for i := uint32(0); i < count; i++ {
-		_, err = a.fd.Read(p[:2])
+		_, err = a.Fd.Read(p[:2])
 		fmtFatalErr(err)
 
 		pathlen := int(binary.BigEndian.Uint16(p[:2]))
@@ -46,22 +48,22 @@ func Extract(arpath, destpath string) {
 			pathbuf = make([]byte, pathlen)
 		}
 
-		_, err = a.fd.Read(pathbuf[:4])
+		_, err = a.Fd.Read(pathbuf[:4])
 		fmtFatalErr(err)
 		mode := os.FileMode(binary.BigEndian.Uint32(pathbuf))
 
-		_, err = a.fd.Read(pathbuf[:4])
+		_, err = a.Fd.Read(pathbuf[:4])
 		modtime := time.Unix(int64(binary.BigEndian.Uint32(pathbuf)), 0)
 		fmtFatalErr(err)
 
-		_, err = a.fd.Read(pathbuf[:sha256.Size])
+		_, err = a.Fd.Read(pathbuf[:sha256.Size])
 		fmtFatalErr(err)
 
 		hash := [sha256.Size]byte{}
 		copy(hash[:], pathbuf[:sha256.Size])
-		isDir := bytes.Equal(pathbuf[:sha256.Size], []byte(dirguid))
+		isDir := bytes.Equal(pathbuf[:sha256.Size], []byte(arp.DirGUID))
 
-		_, err = a.fd.Read(pathbuf[:pathlen])
+		_, err = a.Fd.Read(pathbuf[:pathlen])
 		fmtFatalErr(err)
 
 		path := string(pathbuf[:pathlen])
@@ -69,7 +71,7 @@ func Extract(arpath, destpath string) {
 
 		// list the content and continue reading
 		if flags.action == 'l' {
-			start, length, _ := a.cursor.get(path)
+			start, length, _ := a.Cursor.Get(path)
 			flag, dirstr := " · ", "-"
 			if isDir {
 				dirstr = "d"
@@ -78,13 +80,13 @@ func Extract(arpath, destpath string) {
 
 			if flags.checksum {
 				if !isDir {
-					old, err := a.fd.Seek(0, 1)
+					old, err := a.Fd.Seek(0, 1)
 					fmtFatalErr(err)
-					if _, err = a.Stream(ioutil.Discard, path); err == ErrCorruptedHash {
+					if _, err = a.Stream(ioutil.Discard, path); err == arp.ErrCorruptedHash {
 						badFiles++
 						flag = " X "
 					}
-					_, err = a.fd.Seek(old, 0)
+					_, err = a.Fd.Seek(old, 0)
 					fmtFatalErr(err)
 				}
 
@@ -119,28 +121,28 @@ func Extract(arpath, destpath string) {
 			continue
 		}
 
-		old, err := a.fd.Seek(0, 1)
+		old, err := a.Fd.Seek(0, 1)
 		fmtFatalErr(err)
 
-		start, length, _ := a.cursor.get(path)
+		start, length, _ := a.Cursor.Get(path)
 		fmtPrintf("[%10s] %s", humansize(int64(length)), o.fill(path))
 
-		_, err = a.fd.Seek(int64(start), 0)
+		_, err = a.Fd.Seek(int64(start), 0)
 		fmtFatalErr(err)
 
 		var wr int64
 		var h []byte
 
 		if flags.checksum {
-			wr, h, err = hashcopyN(w, a.fd, int64(length))
+			wr, h, err = arp.HashCopyN(w, a.Fd, int64(length))
 			if !bytes.Equal(h, hash[:]) {
 				w.Close()
-				fmtMaybeErr(finalpath, ErrCorruptedHash)
+				fmtMaybeErr(finalpath, arp.ErrCorruptedHash)
 				badFiles++
 				continue
 			}
 		} else {
-			wr, err = io.CopyN(w, a.fd, int64(length))
+			wr, err = io.CopyN(w, a.Fd, int64(length))
 		}
 
 		if err != nil {
@@ -155,7 +157,7 @@ func Extract(arpath, destpath string) {
 		}
 
 		w.Close()
-		_, err = a.fd.Seek(old, 0)
+		_, err = a.Fd.Seek(old, 0)
 		fmtFatalErr(err)
 	}
 
