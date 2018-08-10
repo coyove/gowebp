@@ -72,12 +72,12 @@ func Extract(arpath, destpath string) {
 		// list the content and continue reading
 		if flags.action == 'l' {
 			start, length, _ := a.Cursor.Get(path)
-			flag, dirstr := " · ", "-"
+			flag := " · "
 			if isDir {
-				dirstr = "d"
 				start, length = 0, 0
 			}
 
+			modestr := uint32mod(uint32(mode))
 			if flags.checksum {
 				if !isDir {
 					old, err := a.Fd.Seek(0, 1)
@@ -90,9 +90,9 @@ func Extract(arpath, destpath string) {
 					fmtFatalErr(err)
 				}
 
-				fmtPrintf("%s%s %s %10x %10d %s %s\n", dirstr, uint16mod(uint16(mode)), modtime.Format(tf), start, length, flag, path)
+				fmtPrintf("%s %s %10x %10d %s %s\n", modestr, modtime.Format(tf), start, length, flag, path)
 			} else {
-				fmtPrintf("%s%s %s %10x %10d %s\n", dirstr, uint16mod(uint16(mode)), modtime.Format(tf), start, length, path)
+				fmtPrintf("%s %s %10x %10d %s\n", modestr, modtime.Format(tf), start, length, path)
 			}
 			continue
 		}
@@ -112,6 +112,11 @@ func Extract(arpath, destpath string) {
 					fmtMaybeErr(finalpath, err)
 				}
 			}
+			continue
+		}
+
+		if err := os.MkdirAll(filepath.Dir(finalpath), mode); err != nil {
+			fmtMaybeErr(finalpath, err)
 			continue
 		}
 

@@ -2,13 +2,22 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
+
+	"github.com/dlclark/regexp2"
 )
+
+const htmlHeader = `
+					<html><meta charset="utf-8">
+					<title>%s</title>
+					<style>*{font-size:12px;font-family:"Lucida Console",Monaco,monospace}td,div{padding:4px}td{white-space:pre;width:1px}</style>
+					<style>.dir{font-weight:bold}a{text-decoration:none}a:hover{text-decoration:underline}</style>
+					<script>function up(){var p=location.href.split('/');p.pop();location.href=p.join('/')}</script>`
 
 var flags struct {
 	action       byte
@@ -20,6 +29,7 @@ var flags struct {
 	listen       string
 	paths        []string
 	xdest        string
+	pattern      *regexp2.Regexp
 }
 
 func panicf(format string, a ...interface{}) {
@@ -28,7 +38,7 @@ func panicf(format string, a ...interface{}) {
 
 func parseFlags() {
 	usage := func() {
-		fmt.Printf("Usage: arr [axlwj]vXkCfL\n")
+		fmt.Printf("Usage: arr [axlwj]vpXkCfL\n")
 	}
 
 	defer func() {
@@ -64,13 +74,17 @@ func parseFlags() {
 		}
 
 		switch nextIs {
-		case 'd':
+		case 'C':
 			nextIs = 0
 			flags.xdest = arg
 			continue
-		case 'l':
+		case 'L':
 			nextIs = 0
 			flags.listen = arg
+			continue
+		case 'p':
+			nextIs = 0
+			flags.pattern = regexp2.MustCompile(arg, 0)
 			continue
 		}
 
@@ -85,17 +99,15 @@ func parseFlags() {
 
 		for _, p := range arg {
 			switch p {
-			case 'a', 'x', 'l', 'w', 'W', 'j':
+			case 'a', 'x', 'l', 'w', 'j':
 				if flags.action != 0 {
 					panicf("conflict arguments: %s and %s", string(p), string(flags.action))
 				}
 				flags.action = byte(p)
 			case 'v':
 				flags.verbose = true
-			case 'C':
-				nextIs = 'd'
-			case 'L':
-				nextIs = 'l'
+			case 'C', 'L', 'p':
+				nextIs = p
 			case 'X':
 				if flags.deloriginal {
 					flags.delimm = true
@@ -157,7 +169,8 @@ func fmtFatalErr(arg error) {
 }
 
 func fmtMaybeErr(args ...interface{}) {
-	os.Stderr.WriteString("\nError: " + fmt.Sprint(args...) + "\n")
+	_, fn, ln, _ := runtime.Caller(1)
+	os.Stderr.WriteString(fmt.Sprintf("\nError (%s:%d): ", fn, ln) + fmt.Sprint(args...) + "\n")
 	if flags.ignoreerrors {
 		return
 	}
@@ -200,16 +213,30 @@ func humansize(size int64) string {
 	return psize
 }
 
-func uint16mod(m uint16) string {
-	buf := &bytes.Buffer{}
-	for i := 0; i < 9; i++ {
-		if m<<uint16(7+i)>>15 == 1 {
-			buf.WriteByte("rwx"[i%3])
-		} else {
-			buf.WriteString("-")
-		}
+func uint32mod(m uint32) string {
+	var a [10]byte
+	a[5] = '`'
+	for i := 3; i >= 0; i-- {
+		q := m / 8
+		a[6+i] = "01234567"[uint(m-q*8)]
+		m = q
 	}
-	return buf.String()
+
+	zeros := 0
+	for i := 4; i >= 0; i-- {
+		q := m / 16
+		a[i] = "0123456789abcdef"[uint(m-q*16)]
+		if a[i] == '0' {
+			zeros++
+		}
+		m = q
+	}
+
+	if zeros == 5 {
+		copy(a[:6], "      ")
+	}
+
+	return string(a[:])
 }
 
 type oneliner struct {

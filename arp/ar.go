@@ -14,6 +14,8 @@ import (
 	"unsafe"
 )
 
+const Header = "zzz0"
+
 // One is a uint64 1
 var One uint64 = 1
 
@@ -22,6 +24,8 @@ var ErrOmitFile = errors.New("")
 
 // ErrCorruptedHash indicates an invalid hash
 var ErrCorruptedHash = errors.New("corrupted file")
+
+var ErrInvalidHeader = errors.New("invalid magic header")
 
 const (
 	DirGUID  = "\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4\xd8\x4d\xd3\xd0\x67\x09\x43\x64\x98\x19\x3f\x6e\x61\x4c\x2f\xd4"
@@ -39,14 +43,6 @@ type EntryInfo struct {
 	score   byte
 }
 
-func (e *EntryInfo) Dirstring() string {
-	dir := "d"
-	if !e.IsDir {
-		dir = "-"
-	}
-	return dir
-}
-
 // Archive represents a standard archive storage
 type Archive struct {
 	Fd       *os.File
@@ -59,8 +55,8 @@ type Archive struct {
 	Created time.Time
 }
 
-// DumpArchiveJmupTable dumps the header
-func DumpArchiveJmupTable(path, dumppath string) error {
+// DumpArchiveJmpTable dumps the header
+func DumpArchiveJmpTable(path, dumppath string) error {
 	ar, err := os.Open(path)
 	if err != nil {
 		return err
@@ -73,34 +69,36 @@ func DumpArchiveJmupTable(path, dumppath string) error {
 	}
 	defer df.Close()
 
+	p, err := DumpArchiveJmpTableBytes(ar)
+	if err != nil {
+		return err
+	}
+
+	_, err = df.Write(p)
+	return err
+}
+
+func DumpArchiveJmpTableBytes(ar io.Reader) ([]byte, error) {
 	cursor := &Uint64OneTwoMap{}
 	p := [MetaSize]byte{}
 	if _, err := ar.Read(p[:]); err != nil {
-		return err
+		return nil, err
 	}
-	if string(p[:4]) != "zzz0" {
-		return fmt.Errorf("invalid header")
+	if string(p[:4]) != Header {
+		return nil, ErrInvalidHeader
 	}
 
 	count := binary.BigEndian.Uint32(p[4:8])
 	if p[12] != *(*byte)(unsafe.Pointer(&One)) {
-		return fmt.Errorf("unmatched endianness")
+		return nil, fmt.Errorf("unmatched endianness")
 	}
 
 	cursor.Data = make([][3]uint64, count)
 	if _, err := ar.Read(cursor.Bytes()); err != nil {
-		return err
+		return nil, err
 	}
 
-	if _, err := df.Write(p[:]); err != nil {
-		return err
-	}
-
-	if _, err := df.Write(cursor.Bytes()); err != nil {
-		return err
-	}
-
-	return nil
+	return append(p[:], cursor.Bytes()...), nil
 }
 
 // OpenArchive opens an archive with the given path
@@ -114,20 +112,30 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 		return nil, err
 	}
 
+	x, err := OpenArchiveBytes(ar, jmpTableOnly)
+	if err != nil {
+		return nil, err
+	}
+
+	x.Fd = ar
+	x.Size = st.Size()
+	x.Path = path
+	x.Info = st
+	return x, nil
+}
+
+// OpenArchiveBytes opens an archive from an io.Reader
+func OpenArchiveBytes(ar io.Reader, jmpTableOnly bool) (*Archive, error) {
 	x := &Archive{
-		Fd:     ar,
 		Cursor: &Uint64OneTwoMap{},
-		Size:   st.Size(),
-		Path:   path,
-		Info:   st,
 	}
 
 	p := [MetaSize]byte{}
 	if _, err := ar.Read(p[:]); err != nil {
 		return nil, err
 	}
-	if string(p[:4]) != "zzz0" {
-		return nil, fmt.Errorf("invalid header")
+	if string(p[:4]) != Header {
+		return nil, ErrInvalidHeader
 	}
 
 	count := binary.BigEndian.Uint32(p[4:8])

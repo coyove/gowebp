@@ -39,7 +39,7 @@ func main() {
 		}
 	case 'j':
 		for _, path := range flags.paths {
-			arp.DumpArchiveJmupTable(path, path+".jmp")
+			arp.DumpArchiveJmpTable(path, path+".jmp")
 		}
 	case 'w':
 		const tf = "2006-01-02 15:04:05"
@@ -65,12 +65,7 @@ func main() {
 				return
 			}
 
-			w.Write([]byte(fmt.Sprintf(`
-					<html><meta charset="utf-8">
-					<title>%s</title>
-					<style>*{font-size:12px;font-family:"Lucida Console",Monaco,monospace}td,div{padding:4px}td{white-space:nowrap;width:1px}</style>
-					<style>.dir{font-weight:bold}a{text-decoration:none}a:hover{text-decoration:underline}</style>
-					<script>function up(){var p=location.href.split('/');p.pop();location.href=p.join('/')}</script>
+			w.Write([]byte(fmt.Sprintf(htmlHeader+`
 					<div>Total entries: %d, created at: %s</div>
 					<table border=1 style="border-collapse:collapse">
 					<tr><td> Mode </td><td> Modtime </td><td> Offset </td><td align=right> Size </td><td></td></tr>
@@ -84,24 +79,24 @@ func main() {
 
 				if info.IsDir {
 					w.Write([]byte(fmt.Sprintf(`<tr>
-							<td>%s%s</td>
+							<td>%s</td>
 							<td>%s</td>
 							<td>Fdir</td>
 							<td align=right>-</td>
 							<td class=dir><a href='/%s'>%s</a></td>
 						</tr>`,
-						info.Dirstring(), uint16mod(uint16(info.Mode)),
+						uint32mod(info.Mode),
 						info.Modtime.Format(tf), info.Path, filepath.Base(info.Path),
 					)))
 				} else {
 					w.Write([]byte(fmt.Sprintf(`<tr>
-						<td>%s%s</td>
+						<td>%s</td>
 						<td>%s</td>
 						<td>0x%010x</td>
 						<td align=right>%d</td>
 						<td><a href='/%s'>%s</a></td>
 					</tr>`,
-						info.Dirstring(), uint16mod(uint16(info.Mode)),
+						uint32mod(info.Mode),
 						info.Modtime.Format(tf), start, l, info.Path, filepath.Base(info.Path),
 					)))
 				}
@@ -122,34 +117,6 @@ func main() {
 			fmt.Println("Server started at", flags.listen)
 			http.ListenAndServe(flags.listen, nil)
 		}
-
-	case 'W':
-		basepath := flags.paths[0]
-		fmt.Println("Serving base:", basepath)
-
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			uri := r.URL.Path
-			if len(uri) < 1 {
-				w.WriteHeader(400)
-				return
-			}
-
-			uri = strings.Replace(uri[1:], "thumbs/", "", -1)
-			parts := strings.Split(uri, "/")
-
-			w.Header().Add("Access-Control-Allow-Origin", "*")
-			mergepath := filepath.Join(basepath, parts[0]+".arrpkg")
-			fullpath := filepath.Join(basepath, uri)
-
-			if _, err := os.Stat(mergepath); err == nil {
-				split(w, mergepath, strings.Join(parts[1:], "/"))
-			} else {
-				http.ServeFile(w, r, fullpath)
-			}
-		})
-
-		fmt.Println("Server started at", flags.listen)
-		http.ListenAndServe(flags.listen, nil)
 	}
 }
 
@@ -188,10 +155,19 @@ func ArchiveDir(dirpath, arpath string) {
 		}
 		if !os.SameFile(info, info2) {
 			// the path points to a symbolic link, we don't support it
+			fmtPrintf("\nomit symlink: %s\n", path)
 			return nil
 		}
+
 		if path == arpath {
+			// we don't archive ourselves
 			return nil
+		}
+
+		if flags.pattern != nil {
+			if b, err := flags.pattern.MatchString(path); !b || err != nil {
+				return nil
+			}
 		}
 
 		if len(path) > 65535 {
