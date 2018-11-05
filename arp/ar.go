@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"log"
 	"os"
 	"reflect"
 	"sort"
@@ -160,8 +159,6 @@ func OpenArchiveBytes(ar io.Reader, password string, jmpTableOnly bool) (*Archiv
 	pathbuf := make([]byte, 256)
 	for i := uint32(0); i < count; i++ {
 		if _, err := ar.Read(p[:2]); err != nil {
-			log.Println(err)
-			panic(1)
 			return nil, err
 		}
 
