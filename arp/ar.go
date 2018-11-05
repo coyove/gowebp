@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
+	"log"
 	"os"
 	"reflect"
 	"sort"
@@ -50,9 +52,9 @@ type Archive struct {
 	Size     int64
 	Path     string
 	pathhash map[uint64]*EntryInfo
-
-	Info    os.FileInfo
-	Created time.Time
+	Info     os.FileInfo
+	Created  time.Time
+	Password string
 }
 
 // DumpArchiveJmpTable dumps the header
@@ -102,7 +104,7 @@ func DumpArchiveJmpTableBytes(ar io.Reader) ([]byte, error) {
 }
 
 // OpenArchive opens an archive with the given path
-func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
+func OpenArchive(path string, password string, jmpTableOnly bool) (*Archive, error) {
 	ar, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -112,7 +114,7 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 		return nil, err
 	}
 
-	x, err := OpenArchiveBytes(ar, jmpTableOnly)
+	x, err := OpenArchiveBytes(ar, password, jmpTableOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -125,9 +127,10 @@ func OpenArchive(path string, jmpTableOnly bool) (*Archive, error) {
 }
 
 // OpenArchiveBytes opens an archive from an io.Reader
-func OpenArchiveBytes(ar io.Reader, jmpTableOnly bool) (*Archive, error) {
+func OpenArchiveBytes(ar io.Reader, password string, jmpTableOnly bool) (*Archive, error) {
 	x := &Archive{
-		Cursor: &Uint64OneTwoMap{},
+		Cursor:   &Uint64OneTwoMap{},
+		Password: password,
 	}
 
 	p := [MetaSize]byte{}
@@ -157,6 +160,8 @@ func OpenArchiveBytes(ar io.Reader, jmpTableOnly bool) (*Archive, error) {
 	pathbuf := make([]byte, 256)
 	for i := uint32(0); i < count; i++ {
 		if _, err := ar.Read(p[:2]); err != nil {
+			log.Println(err)
+			panic(1)
 			return nil, err
 		}
 
@@ -189,11 +194,17 @@ func OpenArchiveBytes(ar io.Reader, jmpTableOnly bool) (*Archive, error) {
 		if _, err := ar.Read(pathbuf[:pathlen]); err != nil {
 			return nil, err
 		}
-		fi.Path = string(pathbuf[:pathlen])
+
+		fi.Path = string(x.DecodeBytes(pathbuf[:pathlen]))
 		x.pathhash[fnv64Sum(fi.Path)] = fi
 	}
 
 	return x, nil
+}
+
+func (a *Archive) DecodeBytes(in []byte) []byte {
+	buf, _ := ioutil.ReadAll(WrapReaderWriter(bytes.NewReader(in), nil, a.Password))
+	return buf
 }
 
 // Dup duplicates the current archive
@@ -247,6 +258,8 @@ func (a *Archive) Stream(w io.Writer, path string) (int64, error) {
 
 	var wr int64
 	var err error
+
+	w = WrapReaderWriter(nil, w, a.Password)
 
 	if a.pathhash == nil {
 		wr, err = io.CopyN(w, a.Fd, int64(length))

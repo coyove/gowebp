@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	_ "image/jpeg"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -27,15 +28,15 @@ func main() {
 	case 'a':
 		for _, path := range flags.paths {
 			arpath := filepath.Join(filepath.Dir(path), filepath.Base(path)+".arrpkg")
-			ArchiveDir(path, arpath)
+			ArchiveDir(path, arpath, flags.password)
 		}
 	case 'l':
 		for _, path := range flags.paths {
-			Extract(path, "")
+			Extract(path, "", flags.password)
 		}
 	case 'x':
 		for _, path := range flags.paths {
-			Extract(path, flags.xdest)
+			Extract(path, flags.xdest, flags.password)
 		}
 	case 'j':
 		for _, path := range flags.paths {
@@ -43,7 +44,7 @@ func main() {
 		}
 	case 'w':
 		const tf = "2006-01-02 15:04:05"
-		a, err := arp.OpenArchive(flags.paths[0], false)
+		a, err := arp.OpenArchive(flags.paths[0], flags.password, false)
 		if err != nil {
 			fmtPrintferr("Error: %v\n", err)
 			os.Exit(1)
@@ -130,7 +131,7 @@ func main() {
 // 1. (4b) Total files
 // 2. (4b) Archive created time
 // 3. (1b) Endianness, 1: Big endian, 0: Little endian
-func ArchiveDir(dirpath, arpath string) {
+func ArchiveDir(dirpath, arpath string, password string) {
 	const dummy16 = "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00"
 	pathbuflen, full := 0, make([]string, 0)
 	o := newoneliner()
@@ -269,7 +270,8 @@ func ArchiveDir(dirpath, arpath string) {
 			fmtFatalErr(err)
 			pcursor += sha256.Size
 
-			_, err = ar.WriteAt([]byte(finalpath), pcursor)
+			finalfinalpath, _ := ioutil.ReadAll(arp.WrapReaderWriter(strings.NewReader(finalpath), nil, password))
+			_, err = ar.WriteAt(finalfinalpath, pcursor)
 			fmtFatalErr(err)
 
 			pcursor += int64(len(finalpath))
@@ -281,7 +283,7 @@ func ArchiveDir(dirpath, arpath string) {
 		beforeAppend, err := ar.Seek(0, 1)
 		fmtFatalErr(err)
 
-		n, h, err := arp.HashCopy(ar, file)
+		n, h, err := arp.HashCopy(ar, arp.WrapReaderWriter(file, nil, password))
 		if err != nil {
 			fmtMaybeErr(path, err)
 			m.Push(finalpath, arp.ErrFlag, arp.ErrFlag)
@@ -296,7 +298,8 @@ func ArchiveDir(dirpath, arpath string) {
 		fmtFatalErr(err)
 
 		pcursor += sha256.Size
-		_, err = ar.WriteAt([]byte(finalpath), pcursor)
+		finalfinalpath, _ := ioutil.ReadAll(arp.WrapReaderWriter(strings.NewReader(finalpath), nil, password))
+		_, err = ar.WriteAt(finalfinalpath, pcursor)
 		fmtFatalErr(err)
 
 		pcursor += int64(len(finalpath))

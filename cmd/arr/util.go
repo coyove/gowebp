@@ -27,6 +27,7 @@ var flags struct {
 	ignoreerrors bool
 	delimm       bool
 	listen       string
+	password     string
 	paths        []string
 	xdest        string
 	pattern      *regexp2.Regexp
@@ -38,7 +39,7 @@ func panicf(format string, a ...interface{}) {
 
 func parseFlags() {
 	usage := func() {
-		fmt.Printf("Usage: arr [axlwj]vpXkCfL\n")
+		fmt.Printf("Usage: arr [axlwj]vpPXkCfL\n")
 	}
 
 	defer func() {
@@ -64,7 +65,7 @@ func parseFlags() {
 				arg = arg[:len(arg)-1]
 			}
 
-			if nextIs == 'd' {
+			if nextIs == 'C' {
 				nextIs = 0
 				flags.xdest = arg
 			} else {
@@ -86,6 +87,10 @@ func parseFlags() {
 			nextIs = 0
 			flags.pattern = regexp2.MustCompile(arg, 0)
 			continue
+		case 'P':
+			nextIs = 0
+			flags.password = arg
+			continue
 		}
 
 		for strings.HasPrefix(arg, "-") {
@@ -106,7 +111,7 @@ func parseFlags() {
 				flags.action = byte(p)
 			case 'v':
 				flags.verbose = true
-			case 'C', 'L', 'p':
+			case 'C', 'L', 'p', 'P':
 				nextIs = p
 			case 'X':
 				if flags.deloriginal {
@@ -214,7 +219,7 @@ func humansize(size int64) string {
 }
 
 func uint32mod(m uint32) string {
-	var a [10]byte
+	var a = [10]byte{32, 32, 32, 32, 32, 32, 32, 32, 32, 32}
 	a[5] = '`'
 	for i := 3; i >= 0; i-- {
 		q := m / 8
@@ -233,10 +238,17 @@ func uint32mod(m uint32) string {
 	}
 
 	if zeros == 5 {
-		copy(a[:6], "      ")
+		return string(a[6:]) + "      "
 	}
 
 	return string(a[:])
+}
+
+func shortenPath(path string) string {
+	if len(path) < 50 {
+		return path
+	}
+	return "..." + path[len(path)-47:]
 }
 
 type oneliner struct {

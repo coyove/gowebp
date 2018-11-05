@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"io"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -15,16 +15,16 @@ import (
 
 // Extract extracts the archive to the given path
 // if the path doesn't exist, it will be created first
-func Extract(arpath, destpath string) {
+func Extract(arpath, destpath string, password string) {
 	const tf = "2006-01-02 15:04:05"
 	var badFiles = 0
 	var o = newoneliner()
 
-	a, err := arp.OpenArchive(arpath, true)
+	a, err := arp.OpenArchive(arpath, password, true)
 	fmtFatalErr(err)
 	defer a.Close()
 
-	fmtPrintln("Source:", arpath, ", size:", humansize(a.Info.Size()), ",", len(a.Cursor.Data), "files")
+	fmtPrintln("Source:", arpath, "(", humansize(a.Info.Size()), "/", len(a.Cursor.Data), "files )")
 	if flags.action == 'l' {
 		if flags.checksum {
 			fmtPrintf("\nMode       Modtime                 Offset       Size  H\n\n")
@@ -47,6 +47,9 @@ func Extract(arpath, destpath string) {
 		if pathlen > len(pathbuf) {
 			pathbuf = make([]byte, pathlen)
 		}
+		if pathlen > 4096 {
+			fmtFatalErr(fmt.Errorf("unexpected long path: %d", pathlen))
+		}
 
 		_, err = a.Fd.Read(pathbuf[:4])
 		fmtFatalErr(err)
@@ -66,13 +69,13 @@ func Extract(arpath, destpath string) {
 		_, err = a.Fd.Read(pathbuf[:pathlen])
 		fmtFatalErr(err)
 
-		path := string(pathbuf[:pathlen])
+		path := string(a.DecodeBytes(pathbuf[:pathlen]))
 		finalpath := filepath.Join(destpath, path)
 
 		// list the content and continue reading
 		if flags.action == 'l' {
 			start, length, _ := a.Cursor.Get(path)
-			flag := " · "
+			flag := " . "
 			if isDir {
 				start, length = 0, 0
 			}
@@ -90,9 +93,9 @@ func Extract(arpath, destpath string) {
 					fmtFatalErr(err)
 				}
 
-				fmtPrintf("%s %s %10x %10d %s %s\n", modestr, modtime.Format(tf), start, length, flag, path)
+				fmtPrintf("%s %s %10x %10d %s %s\n", modestr, modtime.Format(tf), start, length, flag, shortenPath(path))
 			} else {
-				fmtPrintf("%s %s %10x %10d %s\n", modestr, modtime.Format(tf), start, length, path)
+				fmtPrintf("%s %s %10x %10d %s\n", modestr, modtime.Format(tf), start, length, shortenPath(path))
 			}
 			continue
 		}
@@ -129,39 +132,19 @@ func Extract(arpath, destpath string) {
 		old, err := a.Fd.Seek(0, 1)
 		fmtFatalErr(err)
 
-		start, length, _ := a.Cursor.Get(path)
+		_, length, _ := a.Cursor.Get(path)
 		fmtPrintf("[%10s] %s", humansize(int64(length)), o.fill(path))
 
-		_, err = a.Fd.Seek(int64(start), 0)
-		fmtFatalErr(err)
-
-		var wr int64
-		var h []byte
-
-		if flags.checksum {
-			wr, h, err = arp.HashCopyN(w, a.Fd, int64(length))
-			if !bytes.Equal(h, hash[:]) {
-				w.Close()
-				fmtMaybeErr(finalpath, arp.ErrCorruptedHash)
-				badFiles++
-				continue
-			}
-		} else {
-			wr, err = io.CopyN(w, a.Fd, int64(length))
-		}
-
-		if err != nil {
+		if _, err := a.Stream(w, path); err != nil {
 			w.Close()
 			fmtMaybeErr(finalpath, err)
+			if flags.checksum && err == arp.ErrCorruptedHash {
+				badFiles++
+			}
 			continue
 		}
-		if wr != int64(length) {
-			w.Close()
-			fmtMaybeErr(finalpath, io.ErrShortWrite)
-			continue
-		}
-
 		w.Close()
+
 		_, err = a.Fd.Seek(old, 0)
 		fmtFatalErr(err)
 	}
