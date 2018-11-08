@@ -148,7 +148,7 @@ func OpenArchiveBytes(ar io.Reader, password string, jmpTableOnly bool) (*Archiv
 
 	x.Cursor.Data = make([][3]uint64, count)
 	if _, err := ar.Read(x.Cursor.Bytes()); err != nil {
-		return nil, err
+		return x, err
 	}
 
 	if jmpTableOnly {
@@ -318,6 +318,8 @@ func fnv64Sum(data string) uint64 {
 	}
 	return hash
 }
+
+func (m *Uint64OneTwoMap) Len() int { return len(m.Data) }
 
 func (m *Uint64OneTwoMap) Push(k string, v, l uint64) {
 	if m.Data == nil {
